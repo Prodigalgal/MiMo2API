@@ -1002,7 +1002,7 @@ def _response_function_call_item(tool_call: dict, call_id: str | None = None) ->
     """从 tool_call 构建 function_call item。"""
     fn = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
     return {
-        "id": tool_call.get("id") or f"fc_{uuid.uuid4().hex[:24]}",
+        "id": f"fc_{uuid.uuid4().hex[:24]}",
         "type": "function_call",
         "call_id": call_id or tool_call.get("id") or f"call_{uuid.uuid4().hex[:24]}",
         "name": fn.get("name", ""),
