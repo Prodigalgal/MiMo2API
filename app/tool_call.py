@@ -47,11 +47,12 @@ def build_tool_prompt(tools: List[Dict[str, Any]]) -> str:
         return ""
     parts = []
     for tool in tools:
+        # 兼容两种格式：Chat Completions (tool.function.name) 和 Responses API (tool.name)
         func = _safe_get(tool, "function", default={})
-        name = _safe_get(func, "name", default="")
+        name = _safe_get(func, "name", default="") or _safe_get(tool, "name", default="")
         if not name:
             continue
-        desc = _safe_get(func, "description", default="")
+        desc = _safe_get(func, "description", default="") or _safe_get(tool, "description", default="")
         short_desc = desc.split("\n")[0].strip()
         if short_desc:
             parts.append(f"{name}({short_desc})")
@@ -68,8 +69,9 @@ def get_tool_names(tools: List[Dict[str, Any]]) -> List[str]:
     """从 tools 列表提取所有 function name。"""
     names = []
     for tool in tools or []:
+        # 兼容两种格式：Chat Completions (tool.function.name) 和 Responses API (tool.name)
         func = _safe_get(tool, "function", default={})
-        name = _safe_get(func, "name", default=None)
+        name = _safe_get(func, "name", default=None) or _safe_get(tool, "name", default=None)
         if name:
             names.append(str(name))
     return names

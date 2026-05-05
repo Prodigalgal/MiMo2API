@@ -1407,10 +1407,12 @@ async def _do_response_chat(body: dict, account) -> tuple:
     remaining_thinks = []
     cleaned_content = re.sub(
         r'<think>(.*?)</think>',
-        lambda m: remaining_thinks.append(m.group(1)) or '',
+        lambda m: remaining_thinks.append(m.group(1).strip()) or '',
         content,
         flags=re.DOTALL
     )
+    # 过滤空 think 块（模型可能输出 <think></think>）
+    remaining_thinks = [t for t in remaining_thinks if t]
     if remaining_thinks:
         content = cleaned_content.strip()
         extra_think = '\n'.join(remaining_thinks)
