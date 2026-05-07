@@ -35,6 +35,7 @@
   - [深度思考模式](#7-深度思考模式)
   - [模型发现与刷新](#8-模型发现与刷新)
 - [Anthropic Messages API](#9-anthropic-messages-api)
+- [Responses API 详解](#responses-api-详解)
 - [工具调用详解](#工具调用详解)
 - [无工具分支 (no-tools)](#无工具分支-no-tools)
 - [管理命令](#管理命令)
