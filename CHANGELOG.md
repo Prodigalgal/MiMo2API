@@ -2,6 +2,13 @@
 
 本文件记录 MiMo2API 的所有重要变更。
 
+## [v2.2.2] — 2026-05-11
+
+### Fixed
+- **skill 工具参数兼容** — MiMo 模型偶尔把 `skill_view` 的参数名写成 `skill_name`，现自动重映射为 `name`，兼容两种写法。同时覆盖 `skill_manage`、`use_skill`
+- **MiMoML 格式泄漏** — 模型输出 MiMoML 格式模板示例（占位符工具名）时，标签不再泄漏到响应正文。`extract_tool_call` 无匹配回退时也清理 MiMoML 残留
+- **StreamSieve 清理** — Sieve 捕获 MiMoML 但未解析到工具调用时，使用 `extract_tool_call` 清理后的文本而非原始捕获缓冲
+
 ## [v2.3.2] — 2026-05-08
 
 ### Added

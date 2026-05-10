@@ -466,9 +466,11 @@ async def chat_completions(
         if tools_dict:
             tool_names = get_tool_names(tools_dict)
             result = extract_tool_call(content, tool_names)
-            if result and result[0]:
-                tool_calls = result[0]  # List[Dict]
-                content = result[1] if len(result) > 1 else clean_tool_text(content)
+            if result:
+                if result[0]:
+                    tool_calls = result[0]  # List[Dict]
+                if result[1] is not None:
+                    content = result[1]  # 使用清理后的文本（含 MiMoML 残留清理）
 
         # 清洗工具名前缀
         content = _strip_tool_name_prefix(content, tool_names)
@@ -534,6 +536,7 @@ async def _stream_response(
                 parse_fn=lambda text: extract_tool_call(text, tool_names),
             )
             collected_tool_calls = []
+            content_buffer_chunks = []  # 缓冲 content，确认无工具调用后再发
             in_think = False
             buffer = ""
             last_usage = None
@@ -556,14 +559,14 @@ async def _stream_response(
                         if idx != -1:
                             safe, keep = _safe_flush(buffer[:idx])
                             if safe:
-                                # Feed through sieve — stream text, collect tool calls
+                                # Feed through sieve — buffer text, collect tool calls
                                 for ev in sieve.feed(safe):
                                     if ev.type == 'text':
                                         clean = _strip_tool_result_blocks(ev.data)
                                         clean = _strip_citations(clean)
                                         clean = _strip_tool_name_prefix(clean, tool_names)
                                         if clean:
-                                            yield _build_chunk(msg_id, model, created=created_t, content=clean)
+                                            content_buffer_chunks.append(clean)
                                     elif ev.type == 'tool_calls':
                                         collected_tool_calls.extend(ev.data)
                             in_think = True
@@ -578,7 +581,7 @@ async def _stream_response(
                                     clean = _strip_citations(clean)
                                     clean = _strip_tool_name_prefix(clean, tool_names)
                                     if clean:
-                                        yield _build_chunk(msg_id, model, created=created_t, content=clean)
+                                        content_buffer_chunks.append(clean)
                                 elif ev.type == 'tool_calls':
                                     collected_tool_calls.extend(ev.data)
                         buffer = keep
@@ -599,7 +602,7 @@ async def _stream_response(
                         buffer = keep
                         break
 
-            # 正文留在 buffer 中的追加到 sieve
+            # 正文留在 buffer 中的追加到 sieve（缓冲，不立即发）
             if buffer and not in_think:
                 for ev in sieve.feed(buffer):
                     if ev.type == 'text':
@@ -607,22 +610,23 @@ async def _stream_response(
                         clean = _strip_citations(clean)
                         clean = _strip_tool_name_prefix(clean, tool_names)
                         if clean:
-                            yield _build_chunk(msg_id, model, created=created_t, content=clean)
+                            content_buffer_chunks.append(clean)
                     elif ev.type == 'tool_calls':
                         collected_tool_calls.extend(ev.data)
 
-            # 刷新 sieve，回收最终工具调用
+            # 刷新 sieve，回收最终工具调用（缓冲，不立即发）
             for ev in sieve.flush():
                 if ev.type == 'text':
                     clean = _strip_tool_result_blocks(ev.data)
                     clean = _strip_citations(clean)
                     clean = _strip_tool_name_prefix(clean, tool_names)
                     if clean:
-                        yield _build_chunk(msg_id, model, created=created_t, content=clean)
+                        content_buffer_chunks.append(clean)
                 elif ev.type == 'tool_calls':
                     collected_tool_calls.extend(ev.data)
 
             if collected_tool_calls:
+                # 有工具调用 → 不发 content，只发 tool_calls
                 streaming_tc = [{**tc, "index": 0} for tc in collected_tool_calls]
                 yield _build_chunk(msg_id, model, created=created_t,
                                    tool_calls=streaming_tc, finish_reason="tool_calls")
@@ -632,7 +636,9 @@ async def _stream_response(
                     _update_session_tokens(account_id, conv_id, last_usage.get("promptTokens", 0))
                 return
 
-            # 无工具调用：content 已经流式发送，只发 finish
+            # 无工具调用：一次性发送所有缓冲的 content
+            for chunk_text in content_buffer_chunks:
+                yield _build_chunk(msg_id, model, created=created_t, content=chunk_text)
             yield _build_chunk(msg_id, model, created=created_t, finish_reason="stop")
             yield "data: [DONE]\n\n"
             if last_usage:
@@ -1497,9 +1503,11 @@ async def _do_response_chat(body: dict, account) -> tuple:
     if tools_dict:
         tool_names = get_tool_names(tools_dict)
         result = extract_tool_call(content, tool_names)
-        if result and result[0]:
-            tool_calls = result[0]
-            content = result[1] if len(result) > 1 else clean_tool_text(content)
+        if result:
+            if result[0]:
+                tool_calls = result[0]
+            if result[1] is not None:
+                content = result[1]  # 使用清理后的文本（含 MiMoML 残留清理）
 
     content = _strip_tool_name_prefix(content, tool_names)
 

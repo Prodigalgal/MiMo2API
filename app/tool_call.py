@@ -196,7 +196,20 @@ def extract_tool_call(
     if tc:
         return tc, clean_tool_text(text)
 
+    # 无工具调用：若含 MiMoML / 工具标记残留，仍清理再返回
+    if _MIMOML_KEYWORD in text.lower() or _has_tool_markers(text):
+        return None, clean_tool_text(text)
     return None, text
+
+
+def _has_tool_markers(text: str) -> bool:
+    """检测文本是否包含工具调用标记（MiMoML、XML 等）。"""
+    markers = [
+        "TOOL_CALL:", "<tool_call", "<function_call", "<function=",
+        "<|MiMoML|", "<tool_calls>", "<invoke",
+    ]
+    text_lower = text.lower()
+    return any(m.lower() in text_lower for m in markers)
 
 
 # ─── 策略0: MiMoML 格式（最高优先级）─────────────────────
@@ -502,6 +515,7 @@ def normalize_tool_call(raw: Any) -> Optional[Dict[str, Any]]:
                 func["arguments"] = json.dumps(func["arguments"], ensure_ascii=False)
             elif "arguments" not in func:
                 func["arguments"] = "{}"
+            _fixup_skill_params(func)
             return raw
 
     # 扁平格式: {"name": "xxx", "arguments": {...}}
@@ -513,14 +527,40 @@ def normalize_tool_call(raw: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(args, str):
         args = json.dumps(args, ensure_ascii=False)
 
+    func = {"name": name, "arguments": args}
+    _fixup_skill_params(func)
     return {
         "id": f"call_{uuid.uuid4().hex[:24]}",
         "type": "function",
-        "function": {
-            "name": name,
-            "arguments": args,
-        },
+        "function": func,
     }
+
+
+# ─── 参数修复：skill_name → name 兼容 ─────────────────────
+
+_SKILL_TOOLS = {"skill_view", "skill_manage", "use_skill"}
+
+def _fixup_skill_params(func: Dict[str, Any]) -> None:
+    """修复 skill 工具的常见参数名偏差。
+
+    MiMo 模型偶尔把 skill_view 的 name 参数写成 skill_name，
+    这里自动重映射，兼容两种写法。
+    """
+    if func.get("name") not in _SKILL_TOOLS:
+        return
+    try:
+        args = func["arguments"]
+        if isinstance(args, str):
+            args = json.loads(args)
+            is_str = True
+        else:
+            is_str = False
+        if "skill_name" in args and "name" not in args:
+            args["name"] = args.pop("skill_name")
+            if is_str:
+                func["arguments"] = json.dumps(args, ensure_ascii=False)
+    except (json.JSONDecodeError, TypeError, KeyError):
+        pass
 
 
 # ─── 清理工具文本 ──────────────────────────────────────────

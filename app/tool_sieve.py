@@ -204,8 +204,9 @@ class StreamSieve:
         if tool_calls:
             return (prefix or "", tool_calls, suffix or "")
         else:
-            # 有工具标记但解析出来没有调用 → 全部释放为正文
-            return (self._capture_buf, None, "")
+            # 有工具标记但解析出来没有调用 → 释放清理后的正文
+            text_to_emit = cleaned if cleaned else self._capture_buf
+            return (text_to_emit, None, "")
 
     def _is_capture_complete(self) -> bool:
         """判断捕获缓冲是否包含完整的工具调用块"""
