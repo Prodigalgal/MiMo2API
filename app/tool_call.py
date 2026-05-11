@@ -617,7 +617,7 @@ def clean_tool_text(text: str) -> str:
     # 多余空行
     text = re.sub(r"\n{3,}", "\n\n", text)
 
-    return text.strip()
+    return text  # 不 strip — 流式分块中 \n 需要保留
 
 
 # ═══════════════════════════════════════════════════════════
