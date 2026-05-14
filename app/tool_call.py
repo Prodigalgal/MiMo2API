@@ -224,7 +224,11 @@ def _extract_mimoml_tool_call(
       </|MiMoML|invoke>
     </|MiMoML|tool_calls>
     """
-    if _MIMOML_KEYWORD not in text.lower():
+    if not (_MIMOML_KEYWORD in text.lower() or
+            _DSML_KEYWORD in text.lower() or
+            "function_calls" in text.lower() or
+            "tool_calls" in text.lower() or
+            "invoke" in text.lower()):
         return None
 
     # 松散 CDATA 修复：处理未闭合的 CDATA
@@ -256,10 +260,15 @@ def _extract_mimoml_tool_call(
     # 也处理裸 <invoke>（无 <tool_calls> 包裹），模型有时省略外层
     if not blocks:
         invoke_bare = re.compile(
-            r"<invoke\s*name=[\"']([^\"']+)[\"']>(.*?)</invoke>",
+            r"<invoke\s*name=[\"']([^\"']+)[\"'][^>]*>(.*?)</invoke>",
             re.DOTALL | re.IGNORECASE,
         )
-        for m in invoke_bare.finditer(normalized):
+        # Fallback: invokename= (missing space)
+        invoke_bare_nospace = re.compile(
+            r"<invokename=[\"']([^\"']+)[\"']>(.*?)</invoke>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        for m in list(invoke_bare.finditer(normalized)) + list(invoke_bare_nospace.finditer(normalized)):
             name = m.group(1).strip()
             if _is_inside_think(normalized, m.start()):
                 continue
@@ -272,10 +281,15 @@ def _extract_mimoml_tool_call(
 
     for block_text, _, _ in blocks:
         invoke_pattern = re.compile(
-            r"<invoke\s*name=[\"']([^\"']+)[\"']>(.*?)</invoke>",
+            r"<invoke\s*name=[\"']([^\"']+)[\"'][^>]*>(.*?)</invoke>",
             re.DOTALL | re.IGNORECASE,
         )
-        for m in invoke_pattern.finditer(block_text):
+        # Fallback: invokename= (missing space)
+        invoke_nospace = re.compile(
+            r"<invokename=[\"']([^\"']+)[\"']>(.*?)</invoke>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        for m in list(invoke_pattern.finditer(block_text)) + list(invoke_nospace.finditer(block_text)):
             name = m.group(1).strip()
             inner = m.group(2)
             args = _parse_mimoml_parameters(inner)
@@ -802,7 +816,7 @@ _MIMOML_HYPHENATED = {
     "mimoml-parameter": "parameter",
 }
 
-_MIMOML_TAG_NAMES = {"tool_calls", "function_calls", "invoke", "parameter"}
+_MIMOML_TAG_NAMES = {"tool_calls", "function_calls", "invoke", "parameter", "invokename"}
 _CDATA_OPEN = "<![CDATA["
 _CDATA_CLOSE = "]]>"
 
@@ -971,9 +985,11 @@ def _consume_mimoml_noise(rest: str, text_lower: str, abs_pos: int) -> tuple:
             j += 1
             is_mimoml = True
             continue
-        # mimoml 关键字
-        if rest[j:j+_MIMOML_KEYWORD_LEN].lower() == _MIMOML_KEYWORD:
-            j += _MIMOML_KEYWORD_LEN
+        # mimoml / dsml 关键字
+        if (rest[j:j+_MIMOML_KEYWORD_LEN].lower() == _MIMOML_KEYWORD or
+                rest[j:j+_DSML_KEYWORD_LEN].lower() == _DSML_KEYWORD):
+            kw_len = _DSML_KEYWORD_LEN if rest[j:j+_DSML_KEYWORD_LEN].lower() == _DSML_KEYWORD else _MIMOML_KEYWORD_LEN
+            j += kw_len
             is_mimoml = True
             # 如果后面紧跟 - 或 _（连字符变体），也吞掉
             if j < rest_len and rest[j] in ('-', '_'):
@@ -1020,7 +1036,7 @@ def _parse_mimoml_parameters(inner_text: str) -> Dict[str, Any]:
     """
     args: Dict[str, Any] = {}
     param_pattern = re.compile(
-        r"<parameter\s+name=[\"']([^\"']+)[\"']>(.*?)</parameter>",
+        r"<parameter\s+name=[\"']([^\"']+)[\"'][^>]*>(.*?)</parameter>",
         re.DOTALL | re.IGNORECASE,
     )
     for m in param_pattern.finditer(inner_text):
@@ -1037,6 +1053,26 @@ def _parse_mimoml_parameters(inner_text: str) -> Dict[str, Any]:
                 args[key] = [existing, val]
         else:
             args[key] = val
+
+    # Fallback: <parameter=KEY>VALUE</parameter> (等号格式)
+    if not args:
+        eq_pattern = re.compile(
+            r"<parameter=(\w+)>(.*?)</parameter>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        for m in eq_pattern.finditer(inner_text):
+            key = m.group(1).strip()
+            val_raw = m.group(2).strip()
+            val = _parse_param_value(val_raw, param_name=key)
+            if key in args:
+                existing = args[key]
+                if isinstance(existing, list):
+                    existing.append(val)
+                else:
+                    args[key] = [existing, val]
+            else:
+                args[key] = val
+
     return args
 
 
