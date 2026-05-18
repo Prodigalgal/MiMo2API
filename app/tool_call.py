@@ -428,12 +428,16 @@ def _extract_json_tool_call(
         start = text.find("}", brace + len(js)) + 1
 
 
-# ─── 策略4: <tool_call> XML（MiMo 原生） ───────────────────
+# ─── 策略3 + 策略3.5: <tool_call> XML（MiMo 原生 + Roo Code 格式）───
 
 def _extract_xml_tool_call(
     text: str, tool_names: List[str]
 ) -> Optional[List[Dict[str, Any]]]:
-    """匹配 <tool_call><function=NAME><parameter=K>V</parameter>...</function></tool_call>"""
+    """匹配 <tool_call> XML 格式，支持两种变体：
+
+    MiMo 原生: <tool_call><function=NAME><parameter=K>V</parameter>...</function></tool_call>
+    Roo Code:  <tool_call><tool_name>NAME</tool_name><PARAM>V</PARAM></tool_call>
+    """
     tc_pattern = r"<tool_call>(.*?)</tool_call>"
     m = re.search(tc_pattern, text, re.DOTALL | re.IGNORECASE)
     if not m:
@@ -444,33 +448,63 @@ def _extract_xml_tool_call(
 
     inner = m.group(1)
 
+    # 尝试 MiMo 原生格式: <function=NAME>
     func_pattern = r"<function=(\w+)>(.*?)</function>"
     fm = re.search(func_pattern, inner, re.DOTALL | re.IGNORECASE)
     if fm:
         name = fm.group(1).strip()
         func_body = fm.group(2)
-    else:
-        # 回退：内容格式 <function>NAME</function> 或 <function>NAME>（畸形闭合）
-        content_pattern = r"<function>(.*?)(?:</function>|$)"
-        fm = re.search(content_pattern, inner, re.DOTALL | re.IGNORECASE)
-        if not fm:
+        resolved = _resolve_tool_name(name, tool_names)
+        if not resolved:
             return None
-        name = fm.group(1).strip().rstrip('>')
-        func_body = ""
-    resolved = _resolve_tool_name(name, tool_names)
-    if not resolved:
-        return None
+        # 提取 <parameter=KEY>VALUE</parameter>
+        args = {}
+        param_pattern = r"<parameter=(\w+)>(.*?)</parameter>"
+        for pm in re.finditer(param_pattern, func_body, re.DOTALL | re.IGNORECASE):
+            key = pm.group(1).strip()
+            val = pm.group(2).strip()
+            args[key] = _auto_type(val)
+        tc = normalize_tool_call({"name": resolved, "arguments": args})
+        return [tc] if tc else None
 
-    # 提取 <parameter=KEY>VALUE</parameter>
-    args = {}
-    param_pattern = r"<parameter=(\w+)>(.*?)</parameter>"
-    for pm in re.finditer(param_pattern, func_body, re.DOTALL | re.IGNORECASE):
-        key = pm.group(1).strip()
-        val = pm.group(2).strip()
-        args[key] = _auto_type(val)
+    # 回退：<function>NAME</function>（畸形闭合）
+    content_pattern = r"<function>(.*?)(?:</function>|$)"
+    fm = re.search(content_pattern, inner, re.DOTALL | re.IGNORECASE)
+    if fm:
+        name = fm.group(1).strip().rstrip(">")
+        resolved = _resolve_tool_name(name, tool_names)
+        if not resolved:
+            return None
+        args = {}
+        param_pattern = r"<parameter=(\w+)>(.*?)</parameter>"
+        for pm in re.finditer(param_pattern, inner, re.DOTALL | re.IGNORECASE):
+            key = pm.group(1).strip()
+            val = pm.group(2).strip()
+            args[key] = _auto_type(val)
+        tc = normalize_tool_call({"name": resolved, "arguments": args})
+        return [tc] if tc else None
 
-    tc = normalize_tool_call({"name": resolved, "arguments": args})
-    return [tc] if tc else None
+    # Roo Code 格式: <tool_name>NAME</tool_name> + 参数名即标签
+    tn_pattern = r"<tool_name>(.*?)</tool_name>"
+    tn_m = re.search(tn_pattern, inner, re.DOTALL | re.IGNORECASE)
+    if tn_m:
+        name = tn_m.group(1).strip()
+        resolved = _resolve_tool_name(name, tool_names)
+        if not resolved:
+            return None
+        # 提取所有 <PARAM_NAME>VALUE</PARAM_NAME>（排除 <tool_name> 本身）
+        args = {}
+        rc_param_pattern = r"<(\w+)>(.*?)</\1>"
+        for pm in re.finditer(rc_param_pattern, inner, re.DOTALL):
+            pname = pm.group(1).strip().lower()
+            pval = pm.group(2).strip()
+            if pname == "tool_name":
+                continue
+            args[pname] = _auto_type(pval)
+        tc = normalize_tool_call({"name": resolved, "arguments": args})
+        return [tc] if tc else None
+
+    return None
 
 
 # ─── 策略5: <function_call> JSON+XML ────────────────────────
