@@ -4,3 +4,5 @@ __pycache__/
 sessions.json
 usage.json
 app/responses.json
+test_tts.wav
+usage.json

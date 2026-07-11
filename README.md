@@ -12,7 +12,7 @@
 
 > 📖 [English Version](README_EN.md)
 
-> **💡 不需要工具调用或需要 TTS 语音合成？** 建议使用 [`no-tools` 分支](#无工具分支-no-tools) — 不注入工具 prompt，上下文更干净、输出质量更高，且完整保留 TTS 语音合成功能。
+> **💡 TTS 语音合成和 ASR 语音识别已合并到主分支！** 使用 `main` 分支即可获得完整功能。
 
 
 
@@ -37,6 +37,8 @@
   - [深度思考模式](#7-深度思考模式)
   - [模型发现与刷新](#8-模型发现与刷新)
 - [Anthropic Messages API](#9-anthropic-messages-api)
+- [TTS 语音合成](#tts-语音合成)
+- [ASR 语音识别](#asr-语音识别)
 - [Responses API 详解](#responses-api-详解)
 - [工具调用详解](#工具调用详解)
 - [无工具分支 (no-tools)](#无工具分支-no-tools)
@@ -60,6 +62,8 @@
 - **动态模型发现** — 启动时从 MiMo 官方 API 实时拉取可用模型列表，无需手动维护
 - **凭证管理** — 支持 Cookie 导入、cURL 导入两种配置方式
 - **CORS 全开** — 允许任意来源跨域访问
+- **TTS 语音合成** — 兼容 OpenAI `/v1/audio/speech` 接口，支持冰糖/茉莉/白桦/苏打/Mia/Chloe 6 种音色，支持 voicedesign 自定义音色和 voiceclone 声音克隆
+- **ASR 语音识别** — 兼容 OpenAI Whisper `/v1/audio/transcriptions` 接口，支持自动语言检测，上传音频即可转文字
 - **无工具分支** — 提供 `no-tools` 分支，移除工具调用逻辑，适合纯对话场景，输出质量更高
 
 ## 架构
@@ -126,7 +130,7 @@ services:
     restart: unless-stopped
 ```
 
-> 💡 **不需要工具调用或需要 TTS？** 克隆 [`no-tools` 分支](https://github.com/Fly143/MiMo2API/tree/no-tools) 即可获得更干净的纯对话版本（无 prompt 注入，输出质量更高），且包含完整语音合成（TTS）功能。
+> 💡 **TTS 语音合成和 ASR 语音识别已合并到主分支！** 使用 `main` 分支即可获得完整功能。
 
 ### 手动安装
 
@@ -509,6 +513,165 @@ curl -X POST http://localhost:8080/v1/messages \
 
 > **注意：** MiMo 的工具调用基于文本 TOOL_CALL 格式模拟，非原生 function calling。`no-tools` 分支不含工具调用支持。
 
+## TTS 语音合成
+
+端点：`POST /v1/audio/speech`（OpenAI 兼容）
+
+语音合成（文本转语音）支持将输入的文本自动转换为自然流畅的语音输出。支持预置音色、音色设计、声音克隆等多种模式。
+
+> 📖 [官方文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/speech-synthesis-v2.5)
+
+### 支持的模型
+
+| Model ID | 功能 | 音色 | 注意事项 |
+|----------|------|------|----------|
+| `mimo-v2.5-tts` | 使用预置精品音色进行语音合成 | 预置音色列表 | 支持唱歌模式，不支持音色设计与音色复刻 |
+| `mimo-v2.5-tts-voicedesign` | 通过文本描述定制音色 | 文本描述自动生成 | 不支持唱歌模式、预置音色与音色复刻 |
+| `mimo-v2.5-tts-voiceclone` | 基于音频样本复刻任意音色 | 音频样本精准复刻 | 不支持唱歌模式、预置音色与音色设计 |
+
+### 基本用法
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech   -H "Authorization: Bearer ***"   -H "Content-Type: application/json"   -d '{
+    "model": "mimo-v2.5-tts",
+    "input": "你好，世界！",
+    "voice": "alloy"
+  }'   --output speech.wav
+```
+
+### 参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| model | string | mimo-v2.5-tts | 模型名 |
+| input | string | (必需) | 要合成的文本 |
+| voice | string | alloy | 音色名（预置音色或 base64 音频） |
+| speed | float | 1.0 | 语速 (0.5-2.0) |
+| response_format | string | wav | 返回格式 |
+| style | string | (空) | voicedesign 模型的音色描述 |
+
+### 预置音色
+
+| OpenAI 音色 | MiMo 音色 | 语言 | 性别 |
+|-------------|----------|------|------|
+| alloy | 冰糖 | 中文 | 女性 |
+| echo | 茉莉 | 中文 | 女性 |
+| fable | 白桦 | 中文 | 男性 |
+| onyx | 苏打 | 中文 | 男性 |
+| nova | Mia | 英文 | 女性 |
+| shimmer | Chloe | 英文 | 女性 |
+
+### 风格控制
+
+支持通过自然语言或标签控制语音风格：
+
+**自然语言控制：** 在 `style` 参数中描述想要的风格
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech   -H "Authorization: Bearer ***"   -H "Content-Type: application/json"   -d '{
+    "model": "mimo-v2.5-tts",
+    "input": "今天天气真好啊！",
+    "voice": "alloy",
+    "style": "用轻快上扬的语调，语速稍快，带着开心的情绪"
+  }'   --output speech.wav
+```
+
+**标签控制：** 在文本中嵌入风格标签
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech   -H "Authorization: Bearer ***"   -H "Content-Type: application/json"   -d '{
+    "model": "mimo-v2.5-tts",
+    "input": "(温柔)你好，欢迎来到小米之家。",
+    "voice": "alloy"
+  }'   --output speech.wav
+```
+
+支持的风格标签：开心/悲伤/愤怒/温柔/高冷/活泼/磁性/甜美/东北话/四川话/粤语 等。
+
+### 自定义音色 (voicedesign)
+
+通过文本描述自动生成音色：
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech   -H "Authorization: Bearer ***"   -H "Content-Type: application/json"   -d '{
+    "model": "mimo-v2.5-tts-voicedesign",
+    "input": "你好，世界！",
+    "voice": "alloy",
+    "style": "温柔甜美的女声，语速适中"
+  }'   --output speech.wav
+```
+
+### 声音克隆 (voiceclone)
+
+基于音频样本复刻任意音色，`voice` 参数传入参考音频的 base64 编码：
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech   -H "Authorization: Bearer ***"   -H "Content-Type: application/json"   -d '{
+    "model": "mimo-v2.5-tts-voiceclone",
+    "input": "这是克隆声音后生成的语音。",
+    "voice": "data:audio/wav;base64,UklGRi..."
+  }'   --output speech.wav
+```
+
+## ASR 语音识别
+
+端点：`POST /v1/audio/transcriptions`（OpenAI Whisper 兼容）
+
+语音识别支持将输入的音频自动转换为文本输出，适用于会议转写、歌词识别、方言转写、嘈杂环境录音等场景。
+
+> 📖 [官方文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/Speech-Recognition)
+
+### 支持的模型
+
+当前仅支持 `mimo-v2.5-asr` 模型。
+
+### 核心能力
+
+- **多语种识别** — 支持中英双语识别及自动语种检测，原生支持粤语、吴语、闽南语、四川话等中国方言
+- **高鲁棒性** — 在噪声、远场拾音、多人重叠对话等复杂声学条件下保持稳定识别，支持带伴奏的歌词转写
+- **精准识别** — 精准识别古诗词、专业术语、人名地名等知识密集型内容，自动生成标点无需后处理
+
+### 基本用法
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions   -H "Authorization: Bearer ***"   -F "file=@audio.mp3"   -F "language=auto"
+```
+
+返回：
+
+```json
+{"text": "识别出的文本内容"}
+```
+
+### 参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| file | file | (必需) | 音频文件 (wav/mp3) |
+| model | string | mimo-v2.5-asr | 模型名 (可忽略) |
+| language | string | auto | 语言代码 (auto/zh/en 等) |
+| response_format | string | json | 返回格式: json 或 text |
+
+### 支持的音频格式
+
+| 格式 | MIME 类型 |
+|------|----------|
+| wav | audio/wav |
+| mp3 | audio/mpeg |
+
+### 使用示例
+
+```bash
+# 识别中文音频
+curl -X POST http://localhost:8080/v1/audio/transcriptions   -H "Authorization: Bearer ***"   -F "file=@meeting.wav"   -F "language=zh"
+
+# 识别英文音频
+curl -X POST http://localhost:8080/v1/audio/transcriptions   -H "Authorization: Bearer ***"   -F "file=@speech.mp3"   -F "language=en"
+
+# 自动检测语言
+curl -X POST http://localhost:8080/v1/audio/transcriptions   -H "Authorization: Bearer ***"   -F "file=@audio.wav"   -F "language=auto"
+```
+
+---
+
 ## 工具调用详解
 
 MiMo API 本身**不支持** OpenAI function calling 格式。本代理通过**MiMoML 提示词注入 + 5 策略提取**实现：
@@ -597,7 +760,8 @@ git clone -b no-tools https://github.com/Fly143/MiMo2API.git
 | 深度思考 | ✅ | ✅ |
 | 多账号 | ✅ | ✅ |
 | 模型发现 | ✅ | ✅ |
-| TTS 语音合成 | ❌ 不包含 | ✅ `/v1/audio/speech` |
+| TTS 语音合成 | ✅ `/v1/audio/speech` | ✅ `/v1/audio/speech` |
+| ASR 语音识别 | ✅ `/v1/audio/transcriptions` | ✅ `/v1/audio/transcriptions` |
 
 **效果：** 上下文更干净，模型注意力完全集中在用户问题上，回答更专注、质量更高，代码也更简洁。对于大多数日常使用场景，无工具分支是更好的选择。
 

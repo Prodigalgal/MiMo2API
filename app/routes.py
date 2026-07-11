@@ -12,7 +12,7 @@ import httpx
 from typing import Optional, Tuple
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Header, Request, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response, JSONResponse
 from .auth import verify_admin
 from .models import (
     OpenAIRequest, OpenAIResponse, OpenAIChoice, OpenAIMessage,
@@ -78,6 +78,16 @@ def validate_api_key(authorization: Optional[str]) -> bool:
     return config_manager.validate_api_key(key)
 
 
+EXTRA_MODELS = ["mimo-v2.5-tts", "mimo-v2.5-tts-voicedesign", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-asr"]
+
+
+def _append_extra_models(models: list) -> list:
+    for tts in EXTRA_MODELS:
+        if tts not in models:
+            models.append(tts)
+    return models
+
+
 # ─── 动态模型发现 ─────────────────────────────────────────────
 
 async def _do_discover() -> list:
@@ -91,6 +101,11 @@ async def _do_discover() -> list:
             data = r.json()
             model_list = data.get("data", {}).get("modelConfigList", [])
             models = [m["model"] for m in model_list if "model" in m]
+
+            # 追加 TTS 模型（MiMo API 的 modelConfigList 不包含它们）
+            for tts in EXTRA_MODELS:
+                if tts not in models:
+                    models.append(tts)
     except Exception as e:
         print(f"[模型发现] 请求失败: {e}")
         return []
@@ -103,13 +118,13 @@ async def _do_discover() -> list:
 
 async def discover_models() -> list:
     if config_manager.config.models:
-        return config_manager.config.models
+        return _append_extra_models(config_manager.config.models.copy())
     return await _do_discover()
 
 
 def get_models_list() -> list:
     if config_manager.config.models:
-        return config_manager.config.models
+        return _append_extra_models(config_manager.config.models.copy())
     if _models_cache is not None:
         return _models_cache
     return []
@@ -133,19 +148,18 @@ async def list_models(
     asyncio.create_task(_background_refresh())
     models = get_models_list()
     ctx_items = [(m, _model_context(m)) for m in models]
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": m, "object": "model", "created": 1681940951, "owned_by": "xiaomi",
+    data = []
+    for m, ctx in ctx_items:
+        obj = {"id": m, "object": "model", "created": 1681940951, "owned_by": "xiaomi"}
+        if ctx:
+            obj.update({
                 "context_length": ctx["context_length"],
                 "context_window": ctx["context_length"],
                 "max_input_tokens": ctx["context_length"],
                 "max_output_tokens": ctx["max_output_tokens"],
-            }
-            for m, ctx in ctx_items if ctx is not None
-        ]
-    }
+            })
+        data.append(obj)
+    return {"object": "list", "data": data}
 
 
 @router.post("/v1/models/refresh")
@@ -158,19 +172,18 @@ async def refresh_models(
         raise HTTPException(status_code=401, detail={"error": {"message": "invalid api key"}})
     models = await discover_models()
     ctx_items = [(m, _model_context(m)) for m in models]
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": m, "object": "model", "created": 1681940951, "owned_by": "xiaomi",
+    data = []
+    for m, ctx in ctx_items:
+        obj = {"id": m, "object": "model", "created": 1681940951, "owned_by": "xiaomi"}
+        if ctx:
+            obj.update({
                 "context_length": ctx["context_length"],
                 "context_window": ctx["context_length"],
                 "max_input_tokens": ctx["context_length"],
                 "max_output_tokens": ctx["max_output_tokens"],
-            }
-            for m, ctx in ctx_items if ctx is not None
-        ]
-    }
+            })
+        data.append(obj)
+    return {"object": "list", "data": data}
 
 
 @router.get("/v1/models/{model_id}")
@@ -406,6 +419,44 @@ async def chat_completions(
     # 提取媒体和文本文件
     query_text, base64_medias, text_files, processed_msgs = extract_medias_from_messages(request.messages)
     effective_model = request.model
+
+    # TTS via /v1/chat/completions：检测 audio 字段和 TTS 模型名
+    if hasattr(request, 'audio') and request.audio and ('-tts' in effective_model or '-voicedesign' in effective_model):
+        acct_tts = await _get_tts_account()
+        voice_name = request.audio.get("voice", "alloy") if isinstance(request.audio, dict) else "alloy"
+        user_content = ""
+        synth_text = ""
+        for msg in request.messages:
+            if msg.role == "user" and isinstance(msg.content, str):
+                user_content = msg.content
+            elif msg.role == "assistant" and isinstance(msg.content, str):
+                synth_text = msg.content
+        if not synth_text:
+            raise HTTPException(status_code=400, detail={"error": {"message": "assistant message is required for TTS"}})
+        audio_bytes = await _tts_generate(effective_model, synth_text, voice_name, user_content, 1.0, acct_tts)
+        import base64 as b64_mod
+        b64_data = b64_mod.b64encode(audio_bytes).decode()
+        now_ts = int(time.time())
+        return JSONResponse(content={
+            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion",
+            "created": now_ts,
+            "model": effective_model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "audio": {
+                        "id": f"audio-{uuid.uuid4().hex[:12]}",
+                        "data": b64_data,
+                        "expires_at": now_ts + 3600,
+                    },
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        })
 
     multi_medias = []
     if base64_medias:
@@ -740,6 +791,308 @@ async def _stream_response(
         #     f.write(f"=== STREAM ERROR ===\n{tb}\n\n")
         yield f"data: {json.dumps({'error': {'message': str(e)}})}\n\n"
         yield "data: [DONE]\n\n"
+
+
+# ─── TTS (语音合成) ──────────────────────────────────────────
+import hashlib as _hashlib
+
+TT_API_BASE = "https://aistudio.xiaomimimo.com"
+
+VOICE_MAP = {
+    "alloy": "冰糖", "echo": "茉莉", "fable": "白桦",
+    "onyx": "苏打", "nova": "Mia", "shimmer": "Chloe",
+}
+
+
+def _generate_style(speed: float, style_hint: str = "") -> str:
+    """从 OpenAI speed 参数生成 MiMo 风格描述。"""
+    if style_hint:
+        return style_hint
+    if speed < 0.8:
+        return "语速较慢，声音沉稳柔和"
+    if speed > 1.2:
+        return "语速稍快，声音明亮有活力"
+    return "语速正常，声音自然流畅"
+
+
+async def _get_tts_account():
+    """获取有 TTS 凭证的账号。"""
+    accounts = config_manager.config.mimo_accounts
+    if not accounts:
+        raise HTTPException(status_code=503, detail={"error": {"message": "no mimo accounts configured"}})
+    for a in accounts:
+        if a.xiaomichatbot_ph and a.service_token and a.user_id:
+            return a
+    raise HTTPException(status_code=503, detail={"error": {"message": "no account with complete TTS credentials"}})
+
+
+async def _tts_generate(
+    model: str, text: str, voice_name: str,
+    style_hint: str, speed: float, acct,
+) -> bytes:
+    """执行 TTS 全流程：创建对话 -> 提交任务 -> 轮询 -> 下载音频。"""
+    if model.endswith("-voicedesign"):
+        user_content = style_hint or "生成一个自然流畅的声音"
+        audio_config = {"format": "wav"}
+    elif model.endswith("-voiceclone"):
+        user_content = ""
+        if not voice_name or voice_name == "alloy" or "," not in str(voice_name):
+            raise HTTPException(status_code=400, detail={"error": {"message": "voiceclone requires voice=data:audio/...;base64,..."}})
+        mime_type = "audio/wav"
+        if ";" in voice_name:
+            mime_part = voice_name.split(";")[0].replace("data:", "", 1)
+            if mime_part:
+                mime_type = mime_part
+        uploaded = await upload_media_to_mimo(voice_name, mime_type, acct, model="mimo-v2-omni")
+        if not uploaded or not uploaded.get("fileUrl"):
+            raise HTTPException(status_code=502, detail={"error": {"message": "voiceclone audio upload failed"}})
+        audio_config = {"format": "wav", "voice": uploaded["fileUrl"]}
+    else:
+        mimo_voice = VOICE_MAP.get(voice_name, voice_name)
+        user_content = _generate_style(speed, style_hint)
+        audio_config = {"format": "wav", "voice": mimo_voice}
+
+    ph = acct.xiaomichatbot_ph
+    conversation_id = uuid.uuid4().hex[:32]
+    msg_id = uuid.uuid4().hex[:32]
+    cookies = {"serviceToken": acct.service_token, "userId": acct.user_id, "xiaomichatbot_ph": ph}
+    base_headers = {"Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=300) as client:
+        sr = await client.post(
+            f"{TT_API_BASE}/open-apis/chat/conversation/save",
+            params={"xiaomichatbot_ph": ph},
+            json={"conversationId": conversation_id, "title": "新对话", "type": "tts"},
+            headers=base_headers,
+            cookies=cookies,
+        )
+        if sr.status_code != 200 or sr.json().get("code") != 0:
+            raise HTTPException(status_code=502, detail={"error": {"message": "TTS conversation create failed"}})
+
+        r = await client.post(
+            f"{TT_API_BASE}/open-apis/tts/v2/generate",
+            params={"xiaomichatbot_ph": ph},
+            json={
+                "conversationId": conversation_id,
+                "msgId": msg_id,
+                "content": {
+                    "messages": [
+                        {"role": "user", "content": user_content},
+                        {"role": "assistant", "content": text},
+                    ],
+                    "audio": audio_config,
+                },
+                "modelConfig": {"modelCode": model, "scene": "BRIEF_DESCRIPTION"},
+            },
+            headers=base_headers,
+            cookies=cookies,
+        )
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail={"error": {"message": f"TTS generate failed: {r.status_code}"}})
+        rdata = r.json()
+        if rdata.get("code") != 0:
+            raise HTTPException(status_code=502, detail={"error": {"message": f"TTS generate error: {rdata.get('msg', 'unknown')}"}})
+        task_id = rdata["data"]["taskId"]
+
+        for _ in range(180):
+            await asyncio.sleep(1)
+            sr = await client.get(
+                f"{TT_API_BASE}/open-apis/tts/generateStatus",
+                params={"xiaomichatbot_ph": ph, "taskId": task_id},
+                headers=base_headers,
+                cookies=cookies,
+            )
+            if sr.status_code != 200:
+                continue
+            sdata = sr.json()
+            if sdata.get("code") != 0:
+                continue
+            status = sdata["data"].get("status")
+            if status == "success":
+                audio_url = sdata["data"]["audioUrl"]
+                break
+            elif status == "failed":
+                raise HTTPException(status_code=502, detail={"error": {"message": "TTS generation failed"}})
+        else:
+            raise HTTPException(status_code=504, detail={"error": {"message": "TTS generation timed out"}})
+
+        ar = await client.get(audio_url)
+        if ar.status_code not in (200, 206):
+            raise HTTPException(status_code=502, detail={"error": {"message": "TTS audio download failed"}})
+        return ar.content
+
+
+@router.post("/v1/audio/speech")
+async def tts_speech(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    """OpenAI 兼容 TTS 接口 — POST /v1/audio/speech"""
+    api_key = authorization or (f"Bearer {x_api_key}" if x_api_key else None)
+    if not validate_api_key(api_key):
+        raise HTTPException(status_code=401, detail={"error": {"message": "invalid api key"}})
+
+    body = await request.json()
+    text = body.get("input", "")
+    if not text:
+        raise HTTPException(status_code=400, detail={"error": {"message": "input is required"}})
+
+    model = body.get("model", "mimo-v2.5-tts")
+    voice_name = body.get("voice", "alloy")
+    speed = body.get("speed", 1.0)
+    resp_format = body.get("response_format", "wav")
+    style_hint = body.get("style", "")
+
+    acct = await _get_tts_account()
+    audio_bytes = await _tts_generate(model, text, voice_name, style_hint, speed, acct)
+
+    content_type = "audio/wav"
+    if resp_format in ("wav",):
+        content_type = "audio/wav"
+
+    return Response(content=audio_bytes, media_type=content_type)
+
+
+# ─── ASR (语音识别) ──────────────────────────────────────────
+
+
+async def _asr_upload_audio(audio_bytes: bytes, filename: str, acct) -> str:
+    """上传音频到小米存储，返回 resourceUrl。"""
+    md5 = _hashlib.md5(audio_bytes).hexdigest()
+    ph = acct.xiaomichatbot_ph
+    cookies = {"serviceToken": acct.service_token, "userId": acct.user_id, "xiaomichatbot_ph": ph}
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://aistudio.xiaomimimo.com/",
+        "Origin": "https://aistudio.xiaomimimo.com",
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        info_res = await client.post(
+            f"{TT_API_BASE}/open-apis/resource/genUploadInfo",
+            params={"xiaomichatbot_ph": ph},
+            json={"fileName": filename},
+            headers=headers,
+            cookies=cookies,
+        )
+        info_data = info_res.json()
+        if info_data.get("code") != 0 or not info_data.get("data"):
+            raise HTTPException(status_code=502, detail={"error": {"message": f"ASR upload info failed: {info_data}"}})
+
+        upload_url = info_data["data"]["uploadUrl"]
+        resource_url = info_data["data"]["resourceUrl"]
+
+        put_headers = {"Content-Type": "application/octet-stream"}
+        put_res = await client.put(upload_url, content=audio_bytes, headers=put_headers)
+        if put_res.status_code != 200:
+            raise HTTPException(status_code=502, detail={"error": {"message": f"ASR upload PUT failed: {put_res.status_code}"}})
+
+        return resource_url
+
+
+async def _asr_recognize(audio_url: str, language: str, acct) -> str:
+    """调用 MiMo ASR 识别，返回识别文本。"""
+    ph = acct.xiaomichatbot_ph
+    conversation_id = uuid.uuid4().hex[:32]
+    msg_id = uuid.uuid4().hex[:32]
+    cookies = {"serviceToken": acct.service_token, "userId": acct.user_id, "xiaomichatbot_ph": ph}
+    base_headers = {"Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        # 先创建对话
+        sr = await client.post(
+            f"{TT_API_BASE}/open-apis/chat/conversation/save",
+            params={"xiaomichatbot_ph": ph},
+            json={"conversationId": conversation_id, "title": "ASR", "type": "asr"},
+            headers=base_headers,
+            cookies=cookies,
+        )
+        if sr.status_code != 200 or sr.json().get("code") != 0:
+            raise HTTPException(status_code=502, detail={"error": {"message": "ASR conversation create failed"}})
+
+        r = await client.post(
+            f"{TT_API_BASE}/open-apis/asr/recognize",
+            params={"xiaomichatbot_ph": ph},
+            json={
+                "conversationId": conversation_id,
+                "msgId": msg_id,
+                "audioUrl": audio_url,
+                "language": language,
+                "modelConfig": {"modelCode": "mimo-v2.5-asr"},
+            },
+            headers=base_headers,
+            cookies=cookies,
+        )
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail={"error": {"message": f"ASR recognize failed: {r.status_code}"}})
+        rdata = r.json()
+        if rdata.get("code") != 0:
+            raise HTTPException(status_code=502, detail={"error": {"message": f"ASR recognize error: {rdata.get('msg', 'unknown')}"}})
+        task_id = rdata["data"]["taskId"]
+
+        for _ in range(60):
+            await asyncio.sleep(1)
+            sr = await client.get(
+                f"{TT_API_BASE}/open-apis/asr/recognizeStatus",
+                params={"xiaomichatbot_ph": ph, "taskId": task_id},
+                headers=base_headers,
+                cookies=cookies,
+            )
+            if sr.status_code != 200:
+                continue
+            sdata = sr.json()
+            if sdata.get("code") != 0:
+                continue
+            data = sdata.get("data", {})
+            status = data.get("status")
+            if status == "success":
+                return data.get("text", "")
+            elif status == "failed":
+                raise HTTPException(status_code=502, detail={"error": {"message": "ASR recognition failed"}})
+
+        raise HTTPException(status_code=504, detail={"error": {"message": "ASR recognition timed out"}})
+
+
+@router.post("/v1/audio/transcriptions")
+async def asr_transcriptions(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    """OpenAI Whisper 兼容 ASR 接口 — POST /v1/audio/transcriptions
+
+    multipart/form-data:
+      - file: 音频文件 (必需)
+      - model: 模型名 (默认 mimo-v2.5-asr，可忽略)
+      - language: 语言代码 (默认 auto)
+      - response_format: json | text (默认 json)
+    """
+    api_key = authorization or (f"Bearer {x_api_key}" if x_api_key else None)
+    if not validate_api_key(api_key):
+        raise HTTPException(status_code=401, detail={"error": {"message": "invalid api key"}})
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(status_code=400, detail={"error": {"message": "file is required"}})
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail={"error": {"message": "empty audio file"}})
+
+    filename = getattr(file, "filename", "audio.mp3") or "audio.mp3"
+    language = form.get("language", "auto")
+    response_format = form.get("response_format", "json")
+
+    acct = await _get_tts_account()
+    audio_url = await _asr_upload_audio(audio_bytes, filename, acct)
+    text = await _asr_recognize(audio_url, language, acct)
+
+    if response_format == "text":
+        return Response(content=text, media_type="text/plain")
+    return {"text": text}
 
 
 # ─── 管理页面 ─────────────────────────────────────────────────

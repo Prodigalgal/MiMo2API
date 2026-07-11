@@ -197,7 +197,7 @@ async def upload_text_file_to_mimo(
             resource_url = info_data["data"]["resourceUrl"]
             object_name = info_data["data"]["objectName"]
 
-            put_headers = {"Content-Type": "application/octet-stream", "content-md5": md5}
+            put_headers = {"Content-Type": "application/octet-stream"}
             put_res = await client.put(upload_url, content=binary_data, headers=put_headers)
             if put_res.status_code != 200:
                 print(f"[uploadTextFile] PUT failed: {put_res.status_code}")
@@ -205,23 +205,28 @@ async def upload_text_file_to_mimo(
 
             from urllib.parse import quote
 
-            parse_url = (
-                f"https://aistudio.xiaomimimo.com/open-apis/resource/parse"
-                f"?fileUrl={quote(resource_url, safe='')}"
-                f"&objectName={quote(object_name, safe='')}"
-                f"&model={model}"
-                f"&xiaomichatbot_ph={ph}"
-            )
+            parse_params = {
+                "fileUrl": resource_url,
+                "objectName": object_name,
+                "model": model,
+                "xiaomichatbot_ph": ph,
+            }
 
             parse_res = None
             for attempt in range(5):
                 try:
-                    resp = await client.post(parse_url, json={}, headers={
-                        "Cookie": cookie,
-                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                        "Referer": "https://aistudio.xiaomimimo.com/",
-                        "Origin": "https://aistudio.xiaomimimo.com"
-                    })
+                    resp = await client.post(
+                        "https://aistudio.xiaomimimo.com/open-apis/resource/parse",
+                        params=parse_params,
+                        json={},
+                        headers={
+                            "Content-Type": "application/json",
+                            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                            "Referer": "https://aistudio.xiaomimimo.com/",
+                            "Origin": "https://aistudio.xiaomimimo.com"
+                        },
+                        cookies=cookies
+                    )
                     data = resp.json()
                     if data.get("code") == 0 and data.get("data", {}).get("id"):
                         parse_res = data
@@ -279,9 +284,9 @@ async def upload_media_to_mimo(
         ext = "jpg"
     file_name = f"{uuid.uuid4().hex}.{ext}"
 
-    cookie = f"serviceToken={account.service_token}; userId={account.user_id}; xiaomichatbot_ph={account.xiaomichatbot_ph}"
+    ph = account.xiaomichatbot_ph
+    cookies = {"serviceToken": account.service_token, "userId": account.user_id, "xiaomichatbot_ph": ph}
     headers = {
-        "Cookie": cookie,
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         "Referer": "https://aistudio.xiaomimimo.com/",
@@ -290,11 +295,12 @@ async def upload_media_to_mimo(
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:
-            ph = account.xiaomichatbot_ph
             info_res = await client.post(
-                f"https://aistudio.xiaomimimo.com/open-apis/resource/genUploadInfo?xiaomichatbot_ph={ph}",
-                json={"fileName": file_name, "fileContentMd5": md5},
-                headers=headers
+                "https://aistudio.xiaomimimo.com/open-apis/resource/genUploadInfo",
+                params={"xiaomichatbot_ph": ph},
+                json={"fileName": file_name},
+                headers=headers,
+                cookies=cookies
             )
             info_data = info_res.json()
             if info_data.get("code") != 0 or not info_data.get("data"):
@@ -305,7 +311,7 @@ async def upload_media_to_mimo(
             resource_url = info_data["data"]["resourceUrl"]
             object_name = info_data["data"]["objectName"]
 
-            put_headers = {"Content-Type": "application/octet-stream", "content-md5": md5}
+            put_headers = {"Content-Type": "application/octet-stream"}
             put_res = await client.put(upload_url, content=binary_data, headers=put_headers)
             if put_res.status_code != 200:
                 print(f"[uploadMedia] PUT failed: {put_res.status_code}")
@@ -313,23 +319,28 @@ async def upload_media_to_mimo(
 
             from urllib.parse import quote
 
-            parse_url = (
-                f"https://aistudio.xiaomimimo.com/open-apis/resource/parse"
-                f"?fileUrl={quote(resource_url, safe='')}"
-                f"&objectName={quote(object_name, safe='')}"
-                f"&model={model}"
-                f"&xiaomichatbot_ph={ph}"
-            )
+            parse_params = {
+                "fileUrl": resource_url,
+                "objectName": object_name,
+                "model": model,
+                "xiaomichatbot_ph": ph,
+            }
 
             parse_res = None
             for attempt in range(5):
                 try:
-                    resp = await client.post(parse_url, json={}, headers={
-                        "Cookie": cookie,
-                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                        "Referer": "https://aistudio.xiaomimimo.com/",
-                        "Origin": "https://aistudio.xiaomimimo.com"
-                    })
+                    resp = await client.post(
+                        "https://aistudio.xiaomimimo.com/open-apis/resource/parse",
+                        params=parse_params,
+                        json={},
+                        headers={
+                            "Content-Type": "application/json",
+                            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                            "Referer": "https://aistudio.xiaomimimo.com/",
+                            "Origin": "https://aistudio.xiaomimimo.com"
+                        },
+                        cookies=cookies
+                    )
                     data = resp.json()
                     if data.get("code") == 0 and data.get("data", {}).get("id"):
                         parse_res = data

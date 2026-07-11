@@ -29,6 +29,7 @@ class OpenAIRequest(BaseModel):
     tools: Optional[List[OpenAITool]] = None
     tool_choice: Optional[Any] = None
     passthrough: bool = False
+    audio: Optional[Dict[str, Any]] = None
 
 
 class OpenAIDelta(BaseModel):
