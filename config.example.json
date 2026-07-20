@@ -1,5 +1,14 @@
 {
   "api_keys": "sk-mimo",
+  "admin_password": "admin",
+  "tools_passthrough": false,
+  "temp_mail": {
+    "api_base": "https://apimail.example.com",
+    "admin_password": "YOUR_ADMIN_PASSWORD",
+    "domain": "",
+    "site_password": "",
+    "register_region": "US"
+  },
   "mimo_accounts": [
     {
       "service_token": "YOUR_SERVICE_TOKEN",

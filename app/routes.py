@@ -1193,6 +1193,8 @@ async def _validate_and_save(
     device_id: str = "",
     auto_renew: bool = True,
     skip_live_check: bool = False,
+    mail_jwt: str = "",
+    region: str = "",
 ):
     from .mimo_client import MimoClient, MimoApiError
 
@@ -1239,6 +1241,8 @@ async def _validate_and_save(
         last_renew=now if (pass_token or password or email) else (prev.last_renew if prev else ""),
         last_test=now if content else (prev.last_test if prev else ""),
         renew_error="",
+        mail_jwt=mail_jwt or (prev.mail_jwt if prev else ""),
+        region=region or (prev.region if prev else ""),
     )
 
     if prev is not None:
@@ -1249,7 +1253,13 @@ async def _validate_and_save(
     else:
         config_manager.config.mimo_accounts.append(new_acc)
     config_manager.save()
-    return {"ok": True, "user_id": user_id, "response": (content or "saved")[:100]}
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "response": (content or "saved")[:100],
+        "email": new_acc.email,
+        "has_mail_jwt": bool(new_acc.mail_jwt),
+    }
 
 
 @router.post("/api/account/import-email")
@@ -1349,6 +1359,172 @@ async def send_email_otp(request: Request, username: str = Depends(verify_admin)
         return {"ok": False, "error": f"发送失败: {str(e)[:200]}"}
 
 
+def _mail_cfg_from_settings():
+    from .temp_mail import TempMailConfig
+    from .config import config_manager as _cm
+
+    tm = _cm.get_temp_mail_settings()
+    return TempMailConfig(
+        api_base=tm.api_base,
+        admin_password=tm.admin_password,
+        domain=tm.domain,
+        site_password=tm.site_password,
+    )
+
+
+@router.get("/api/temp-mail/config")
+async def get_temp_mail_config(username: str = Depends(verify_admin)):
+    tm = config_manager.get_temp_mail_settings()
+    return {"ok": True, "temp_mail": tm.to_dict(mask=True)}
+
+
+@router.post("/api/temp-mail/config")
+async def save_temp_mail_config(request: Request, username: str = Depends(verify_admin)):
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json")
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "invalid body"}
+    # allow nested or flat
+    payload = data.get("temp_mail") if isinstance(data.get("temp_mail"), dict) else data
+    tm = config_manager.update_temp_mail(payload)
+    return {"ok": True, "temp_mail": tm.to_dict(mask=True), "message": "临时邮箱配置已保存"}
+
+
+@router.post("/api/temp-mail/test")
+async def test_temp_mail(request: Request, username: str = Depends(verify_admin)):
+    """Test connectivity. Optional body overrides (not saved unless save=true)."""
+    from .temp_mail import TempMailConfig, test_connection
+
+    overrides = {}
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            overrides = body.get("temp_mail") if isinstance(body.get("temp_mail"), dict) else body
+    except Exception:
+        overrides = {}
+
+    tm = config_manager.get_temp_mail_settings()
+    api_base = (overrides.get("api_base") if overrides.get("api_base") else tm.api_base) or ""
+    admin_password = overrides.get("admin_password")
+    if not admin_password or str(admin_password) in ("", "***") or (
+        isinstance(admin_password, str) and "***" in admin_password and len(admin_password) <= 8
+    ):
+        admin_password = tm.admin_password
+    site_password = overrides.get("site_password")
+    if site_password is None or str(site_password) in ("", "***"):
+        site_password = tm.site_password
+    domain = overrides.get("domain") if overrides.get("domain") is not None else tm.domain
+
+    cfg = TempMailConfig(
+        api_base=str(api_base).strip().rstrip("/"),
+        admin_password=str(admin_password or ""),
+        domain=str(domain or "").strip(),
+        site_password=str(site_password or ""),
+    )
+    result = await test_connection(cfg)
+    if overrides.get("save") and result.get("ok"):
+        config_manager.update_temp_mail({
+            "api_base": cfg.api_base,
+            "admin_password": cfg.admin_password,
+            "domain": cfg.domain,
+            "site_password": cfg.site_password,
+            "register_region": overrides.get("register_region") or tm.register_region,
+        })
+        result["saved"] = True
+    return result
+
+
+@router.post("/api/account/auto-register")
+async def auto_register_account(request: Request, username: str = Depends(verify_admin)):
+    """Auto-register Xiaomi account via temp mail.
+
+    Step 1 body: { region?, domain? } → need_captcha + captcha_image + session_id
+    Step 2 body: { session_id, icode } → complete register + login + save account
+    Refresh captcha: { session_id, refresh_captcha: true }
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    from .xiaomi_register import (
+        auto_register,
+        refresh_captcha,
+        XiaomiRegisterError,
+    )
+    from .temp_mail import TempMailError
+
+    tm = config_manager.get_temp_mail_settings()
+    mail_cfg = _mail_cfg_from_settings()
+    if not mail_cfg.is_configured():
+        return {"ok": False, "error": "请先在「临时邮箱」页配置 API 地址与管理口令"}
+
+    region = (data.get("region") or tm.register_region or "US").upper()
+    if region in ("CN", "ZH", "CHINA"):
+        return {"ok": False, "error": "注册地区不能选择中国，请使用 US / SG / JP 等"}
+
+    session_id = (data.get("session_id") or "").strip() or None
+    icode = (data.get("icode") or data.get("captcha") or "").strip() or None
+
+    if session_id and data.get("refresh_captcha"):
+        try:
+            return await refresh_captcha(session_id)
+        except XiaomiRegisterError as e:
+            return {"ok": False, "error": str(e), "code": e.code, "data": e.data}
+
+    try:
+        result = await auto_register(
+            mail_cfg,
+            region=region,
+            password=(data.get("password") or None),
+            icode=icode,
+            session_id=session_id,
+            otp_timeout=float(data.get("otp_timeout") or 120),
+            domain=(data.get("domain") or tm.domain or None),
+        )
+    except XiaomiRegisterError as e:
+        out = {"ok": False, "error": str(e), "code": e.code, "data": e.data}
+        if e.data and e.data.get("captcha_image"):
+            out["captcha_image"] = e.data["captcha_image"]
+            out["need_captcha"] = True
+            out["session_id"] = session_id
+        return out
+    except TempMailError as e:
+        return {"ok": False, "error": str(e), "data": e.data}
+    except Exception as e:
+        return {"ok": False, "error": f"自动注册失败: {str(e)[:200]}"}
+
+    if result.get("need_captcha"):
+        return result
+
+    # Save account when login succeeded
+    if result.get("logged_in") and result.get("tokens"):
+        tokens = result["tokens"]
+        saved = await _validate_and_save(
+            tokens.get("service_token", ""),
+            tokens.get("user_id", ""),
+            tokens.get("xiaomichatbot_ph", ""),
+            email=result.get("email") or tokens.get("email", ""),
+            password=result.get("password", ""),
+            pass_token=tokens.get("pass_token", ""),
+            c_user_id=tokens.get("c_user_id", ""),
+            device_id=tokens.get("device_id", ""),
+            auto_renew=True,
+            mail_jwt=result.get("mail_jwt", ""),
+            region=result.get("region", region),
+        )
+        result["saved"] = saved
+        if not saved.get("ok"):
+            result["save_error"] = saved.get("error")
+        return result
+
+    return result
+
+
 @router.post("/api/accounts/{idx}/renew")
 async def renew_account(idx: int, request: Request, username: str = Depends(verify_admin)):
     """Manually renew one account.
@@ -1385,14 +1561,72 @@ async def renew_account(idx: int, request: Request, username: str = Depends(veri
     )
 
 
+async def _renew_with_temp_mail_otp(acc, session_id: str) -> dict:
+    """Send OTP + poll temp mail + complete login. Requires acc.mail_jwt + temp_mail config."""
+    from .xiaomi_login import send_pending_email_otp, login_with_password, XiaomiLoginError
+    from .temp_mail import wait_for_code, TempMailError
+
+    mail_cfg = _mail_cfg_from_settings()
+    if not mail_cfg.is_configured() or not getattr(acc, "mail_jwt", ""):
+        return {
+            "ok": False,
+            "need_otp": True,
+            "session_id": session_id,
+            "error": "需要邮箱验证码，但未配置临时邮箱或账号缺少 mail_jwt，无法自动取码",
+            "auto_otp": False,
+        }
+
+    try:
+        await send_pending_email_otp(session_id)
+        code = await wait_for_code(mail_cfg, acc.mail_jwt, timeout=120.0)
+        result = await login_with_password(
+            acc.email,
+            acc.password,
+            otp_code=code,
+            session_id=session_id,
+        )
+        if result.get("ok") and result.get("tokens"):
+            tokens = result["tokens"]
+            return await _validate_and_save(
+                tokens.get("service_token", ""),
+                tokens.get("user_id", "") or acc.user_id,
+                tokens.get("xiaomichatbot_ph", ""),
+                email=acc.email or tokens.get("email", ""),
+                password=acc.password,
+                pass_token=tokens.get("pass_token", "") or acc.pass_token,
+                c_user_id=tokens.get("c_user_id", "") or acc.c_user_id,
+                device_id=tokens.get("device_id", "") or acc.device_id,
+                auto_renew=acc.auto_renew,
+                mail_jwt=acc.mail_jwt,
+                region=acc.region,
+            )
+        return {"ok": False, "error": "验证码登录失败", "data": result, "auto_otp": True}
+    except (XiaomiLoginError, TempMailError) as e:
+        return {
+            "ok": False,
+            "error": str(e)[:200],
+            "need_otp": True,
+            "session_id": session_id,
+            "auto_otp": True,
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"自动取码续期失败: {str(e)[:200]}", "session_id": session_id}
+
+
 async def _renew_one_account(
     idx: int,
     *,
     allow_password_fallback: bool = False,
     session_id: Optional[str] = None,
     otp_code: Optional[str] = None,
+    auto_temp_mail_otp: bool = False,
 ) -> dict:
-    """Renew account. Auto path: passToken only, never send mail code / never password."""
+    """Renew account.
+
+    Default auto path: passToken only.
+    When passToken fails and (auto_temp_mail_otp or allow_password_fallback):
+      password login; if need_otp and mail_jwt present, auto fetch code from temp mail.
+    """
     accounts = config_manager.config.mimo_accounts
     if idx < 0 or idx >= len(accounts):
         return {"ok": False, "error": "account not found"}
@@ -1427,9 +1661,15 @@ async def _renew_one_account(
             c_user_id=tokens.get("c_user_id", "") or acc.c_user_id,
             device_id=tokens.get("device_id", "") or acc.device_id,
             auto_renew=acc.auto_renew,
+            mail_jwt=acc.mail_jwt,
+            region=acc.region,
         )
 
-    if not acc.pass_token and not (allow_password_fallback and acc.email and acc.password):
+    can_password = bool(acc.email and acc.password)
+    can_auto_otp = bool(auto_temp_mail_otp and can_password and getattr(acc, "mail_jwt", ""))
+    use_password = allow_password_fallback or can_auto_otp
+
+    if not acc.pass_token and not use_password:
         acc.renew_error = "缺少 passToken，自动续期不可用；请手动导入或密码续期"
         acc.last_renew = _dt.now().strftime("%m-%d %H:%M")
         config_manager.save()
@@ -1447,7 +1687,7 @@ async def _renew_one_account(
             pass_token=acc.pass_token,
             user_id=acc.user_id,
             c_user_id=acc.c_user_id,
-            allow_password_fallback=allow_password_fallback,
+            allow_password_fallback=use_password,
         )
     except XiaomiLoginError as e:
         acc.is_valid = False
@@ -1457,8 +1697,17 @@ async def _renew_one_account(
         return {"ok": False, "error": str(e), "data": e.data, "need_manual": True}
 
     if result.get("need_otp"):
-        # Password path hit identity check — hand off to user, do not auto-send
-        acc.renew_error = "需要邮箱验证码，请点击发送验证码后填写（系统不会自动发码）"
+        otp_sid = result.get("session_id") or ""
+        if can_auto_otp and otp_sid:
+            auto_res = await _renew_with_temp_mail_otp(acc, otp_sid)
+            if auto_res.get("ok"):
+                return auto_res
+            acc.renew_error = (auto_res.get("error") or "自动取码失败")[:200]
+            acc.last_renew = _dt.now().strftime("%m-%d %H:%M")
+            config_manager.save()
+            return auto_res
+
+        acc.renew_error = "需要邮箱验证码，请点击发送验证码后填写（无 mail_jwt 时不会自动取码）"
         acc.last_renew = _dt.now().strftime("%m-%d %H:%M")
         config_manager.save()
         return {
@@ -1469,6 +1718,7 @@ async def _renew_one_account(
             "email": result.get("email") or acc.email,
             "message": result.get("message") or acc.renew_error,
             "user_id": acc.user_id,
+            "can_auto_otp": bool(getattr(acc, "mail_jwt", "")),
         }
 
     tokens = result.get("tokens") or {}
@@ -1485,26 +1735,32 @@ async def _renew_one_account(
         c_user_id=tokens.get("c_user_id", "") or acc.c_user_id,
         device_id=tokens.get("device_id", "") or acc.device_id,
         auto_renew=acc.auto_renew,
+        mail_jwt=acc.mail_jwt,
+        region=acc.region,
     )
 
 
 @router.post("/api/accounts/renew-all")
 async def renew_all_accounts(username: str = Depends(verify_admin)):
-    """Auto-style renew-all: passToken only, never password/mail code."""
+    """Renew all: passToken first; if fail and mail_jwt present, auto password+temp-mail OTP."""
     results = []
     for i, acc in enumerate(list(config_manager.config.mimo_accounts)):
         if not acc.auto_renew:
             results.append({"idx": i, "user_id": acc.user_id, "skipped": True, "reason": "auto_renew off"})
             continue
-        if not acc.pass_token:
+        if not acc.pass_token and not (acc.email and acc.password and getattr(acc, "mail_jwt", "")):
             results.append({
                 "idx": i,
                 "user_id": acc.user_id,
                 "skipped": True,
-                "reason": "no passToken (auto-renew never uses password/OTP)",
+                "reason": "no passToken and no mail_jwt password path",
             })
             continue
-        r = await _renew_one_account(i, allow_password_fallback=False)
+        r = await _renew_one_account(
+            i,
+            allow_password_fallback=False,
+            auto_temp_mail_otp=True,
+        )
         results.append({"idx": i, "user_id": acc.user_id, **r})
     return {"results": results}
 

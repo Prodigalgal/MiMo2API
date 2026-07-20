@@ -209,6 +209,8 @@
                 <div class="tab active" onclick="switchTab('curl')">cURL</div>
                 <div class="tab" onclick="switchTab('cookie')">Cookie</div>
                 <div class="tab" onclick="switchTab('email')">邮箱</div>
+                <div class="tab" onclick="switchTab('register')">自动注册</div>
+                <div class="tab" onclick="switchTab('tempmail')">临时邮箱</div>
                 <div class="tab" onclick="switchTab('accounts')">账号</div>
                 <div class="tab" onclick="switchTab('apikey')">API Key</div>
                 <div class="tab" onclick="switchTab('usage')">用量统计</div>
@@ -268,6 +270,67 @@
                     <div id="emailResult"></div>
                 </div>
 
+                <!-- 自动注册 -->
+                <div id="panel-register" class="tab-panel">
+                    <div class="status info">使用已配置的 Cloudflare 临时邮箱自动注册小米账号。<br>
+                        地区默认非中国（US），密码随机。需过图片/滑块验证码（当前为图片验证码，手动填写）。<br>
+                        注册成功后自动登录申请 token 并进入保活；token 失效需 mail code 时会自动从临时邮箱取码重登。</div>
+                    <div class="field"><label>注册地区（勿选 CN）</label>
+                        <select id="reg-region" style="width:100%;padding:12px 16px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;color:var(--text)">
+                            <option value="US" selected>United States (US)</option>
+                            <option value="SG">Singapore (SG)</option>
+                            <option value="JP">Japan (JP)</option>
+                            <option value="HK">Hong Kong (HK)</option>
+                            <option value="TW">Taiwan (TW)</option>
+                            <option value="GB">United Kingdom (GB)</option>
+                            <option value="DE">Germany (DE)</option>
+                        </select>
+                    </div>
+                    <div class="field"><label>域名（可选，留空用配置默认）</label>
+                        <input type="text" id="reg-domain" placeholder="例如 edu.omnnu.xyz">
+                    </div>
+                    <div id="reg-captcha-wrap" style="display:none;margin:12px 0">
+                        <div class="field"><label>图片验证码</label>
+                            <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+                                <img id="reg-captcha-img" alt="captcha" style="height:48px;border-radius:8px;background:#fff;cursor:pointer" title="点击刷新" onclick="refreshRegCaptcha()">
+                                <input type="text" id="reg-icode" placeholder="输入验证码" style="flex:1;min-width:120px" maxlength="12">
+                            </div>
+                        </div>
+                        <div class="info-line" style="font-size:12px;color:var(--text-muted);margin-bottom:8px">邮箱: <code id="reg-email-preview"></code> · 密码已随机生成</div>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn-primary" style="flex:1" id="btn-reg-start" onclick="startAutoRegister()">开始注册</button>
+                        <button class="btn-success" style="flex:1;display:none" id="btn-reg-submit" onclick="submitRegCaptcha()">提交验证码并完成</button>
+                    </div>
+                    <div id="regResult"></div>
+                </div>
+
+                <!-- 临时邮箱配置 -->
+                <div id="panel-tempmail" class="tab-panel">
+                    <div class="status info">对接 <a href="https://github.com/dreamhunter2333/cloudflare_temp_email" target="_blank" style="color:var(--primary)">cloudflare_temp_email</a> 自建实例。<br>
+                        管理口令对应后端 <code>ADMIN_PASSWORDS</code>，创建邮箱走 <code>POST /admin/new_address</code>（Header: x-admin-auth）。</div>
+                    <div class="field"><label>API 地址</label>
+                        <input type="url" id="tm-api" placeholder="https://apimail.example.com">
+                    </div>
+                    <div class="field"><label>管理口令 (x-admin-auth)</label>
+                        <input type="password" id="tm-admin" placeholder="ADMIN_PASSWORDS 中的口令" autocomplete="off">
+                    </div>
+                    <div class="field"><label>默认域名（可选）</label>
+                        <input type="text" id="tm-domain" placeholder="留空则使用服务端第一个域名">
+                    </div>
+                    <div class="field"><label>站点密码 x-custom-auth（可选）</label>
+                        <input type="password" id="tm-site" placeholder="若部署启用了站点密码则填写" autocomplete="off">
+                    </div>
+                    <div class="field"><label>默认注册地区</label>
+                        <input type="text" id="tm-region" placeholder="US" value="US">
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn-outline" onclick="testTempMail()">测试连接</button>
+                        <button class="btn-primary" onclick="saveTempMail()">保存配置</button>
+                    </div>
+                    <div id="tmResult"></div>
+                </div>
+
                 <!-- 账号管理 -->
                 <div id="panel-accounts" class="tab-panel">
                     <div id="accounts"></div>
@@ -325,11 +388,13 @@ var _I={zh:{"curl":"cURL","cookie":"Cookie","email":"邮箱","accounts":"账号"
 en:{"curl":"cURL","cookie":"Cookie","email":"Email","accounts":"Accounts","apikey":"API Key","usage":"Usage","parseCurl":"Parse cURL","parseFill":"Parse & Fill ↓","saveAcct":"Save Account","verifyBtn":"Verifying...","saved":"Saved","saveFail":"Save Failed","reqFail":"Request Failed","refresh":"Refresh","testAll":"Test All","cleanupSessions":"Cleanup Old Sessions","noAccts":"No accounts configured","valid":"✅ Active","notVerified":"⚪ Not Verified","test":"Test","delete":"Delete","loadFail":"Load Failed","testing":"Testing...","testFail":"Test Failed","noAcctTest":"No accounts to test","allTestDone":"valid","cleanup":"Cleaning...","cleanupFail":"Cleanup failed: ","unknown":"unknown","deleteConfirm":"Delete this account?","deleted":"Deleted","deleteFail":"Delete Failed","usageNoData":"No usage data","usageModel":"Model","usageReqs":"Requests","usageInput":"Input","usageOutput":"Output","usageTotal":"Total","usageSum":"📋 Total","usageLoadFail":"Load failed: ","periodAll":"All","periodWeek":"This Week","periodToday":"Today","clearConfirm":"Clear all usage data? This cannot be undone.","cleared":"Cleared","clearFail":"Clear failed","configSaved":"Config saved","saveConfigFail":"Save failed","parseFail":"Parse failed, check cURL format","parsing":"Parsing...","parseOk":"Parsed","testConn":"Test Connection","addAcct":"Add Account","connOk":"Connected: ","connFail":"Connection failed: ","acctAdded":"Account added","pasteCurl":"Please paste cURL command","pasteCookie":"Please paste Cookie string","fieldsRequired":"Please fill all fields","filledFields":"Filled","filledFields2":"field(s)","filledFields3":"missing","filledFields4":"","noValidFields":"No valid fields found","apiKeysLabel":"Separate multiple keys with commas","apiKeysPH":"sk-key1, sk-key2, sk-key3","saveConfig":"Save Config","mimoDesc":"Xiaomi MiMo OpenAI-compatible API","keysSaved":"Config saved","saving":"Saving...","passthroughLabel":"Tool Passthrough Mode","passthroughHint":"Skip format instructions, embed raw tool definitions (suitable for Roo Code / Cline)","adminPwdLabel":"Admin Password","adminPwdPH":"Default admin, refresh to re-login after change"}};
 function _(k){return (_I[_lang]||_I.zh)[k]||k}
 function toggleLang(){_lang=_lang==='zh'?'en':'zh';localStorage.setItem('mimo_lang',_lang);$id('langBtn').textContent=_lang==='zh'?'🌐 EN':'🌐 中';applyI18n()}
-function applyI18n(){document.querySelectorAll('[data-i18n]').forEach(function(el){var k=el.getAttribute('data-i18n');if(k)el.textContent=_(k)});document.querySelectorAll('[data-i18n-ph]').forEach(function(el){var k=el.getAttribute('data-i18n-ph');if(k)el.placeholder=_(k)});document.querySelector('.header p').textContent=_('mimoDesc');var tabs=document.querySelectorAll('.tab');var tkeys=['curl','cookie','email','accounts','apikey','usage'];for(var i=0;i<tkeys.length&&i<tabs.length;i++)tabs[i].textContent=_(tkeys[i])}
+function applyI18n(){document.querySelectorAll('[data-i18n]').forEach(function(el){var k=el.getAttribute('data-i18n');if(k)el.textContent=_(k)});document.querySelectorAll('[data-i18n-ph]').forEach(function(el){var k=el.getAttribute('data-i18n-ph');if(k)el.placeholder=_(k)});document.querySelector('.header p').textContent=_('mimoDesc');var tabs=document.querySelectorAll('.tab');var tkeys=['curl','cookie','email','register','tempmail','accounts','apikey','usage'];for(var i=0;i<tkeys.length&&i<tabs.length;i++)tabs[i].textContent=_(tkeys[i])||tabs[i].textContent}
 document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textContent=_lang==='zh'?'🌐 EN':'🌐 中';applyI18n()});
 
         let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
         let _emailSessionId = null;
+        let _regSessionId = null;
+        let _regPassword = '';
 
         // === 工具函数 ===
         function $id(id) { return document.getElementById(id); }
@@ -342,13 +407,15 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             $id(id).innerHTML = `<div class="status ${type}">${msg}</div>`;
         }
         function switchTab(t) {
+            const keys = ['curl','cookie','email','register','tempmail','accounts','apikey','usage'];
             document.querySelectorAll('.tab').forEach((el, i) => {
-                el.className = 'tab' + (['curl','cookie','email','accounts','apikey','usage'][i] === t ? ' active' : '');
+                el.className = 'tab' + (keys[i] === t ? ' active' : '');
             });
             document.querySelectorAll('.tab-panel').forEach(p => p.className = 'tab-panel');
             $id('panel-' + t).className = 'tab-panel active';
             if (t === 'accounts') loadAccounts();
             if (t === 'usage') loadUsage();
+            if (t === 'tempmail') loadTempMail();
         }
 
         // === 加载配置（仅 API Keys） ===
@@ -359,7 +426,216 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 $id('apiKeys').value = cfg.api_keys || '';
                 $id('passthroughToggle').checked = !!cfg.tools_passthrough;
                 $id('adminPassword').value = cfg.admin_password || '';
+                if (cfg.temp_mail) {
+                    applyTempMailForm(cfg.temp_mail);
+                    if (cfg.temp_mail.register_region) {
+                        const sel = $id('reg-region');
+                        if (sel) {
+                            const v = cfg.temp_mail.register_region;
+                            if ([...sel.options].some(o => o.value === v)) sel.value = v;
+                        }
+                    }
+                    if (cfg.temp_mail.domain && $id('reg-domain')) {
+                        $id('reg-domain').placeholder = cfg.temp_mail.domain;
+                    }
+                }
             } catch (e) {}
+        }
+
+        function applyTempMailForm(tm) {
+            if (!tm) return;
+            if ($id('tm-api')) $id('tm-api').value = tm.api_base || '';
+            if ($id('tm-domain')) $id('tm-domain').value = tm.domain || '';
+            if ($id('tm-region')) $id('tm-region').value = tm.register_region || 'US';
+            // password fields: leave blank if masked; user re-enters only when changing
+            if ($id('tm-admin') && tm.admin_password && tm.admin_password.indexOf('***') === -1) {
+                $id('tm-admin').value = tm.admin_password;
+            }
+            if ($id('tm-site') && tm.site_password && tm.site_password.indexOf('***') === -1) {
+                $id('tm-site').value = tm.site_password;
+            }
+        }
+
+        async function loadTempMail() {
+            try {
+                const r = await fetch('/api/temp-mail/config');
+                const j = await r.json();
+                if (j.temp_mail) applyTempMailForm(j.temp_mail);
+            } catch (e) {}
+        }
+
+        async function saveTempMail() {
+            const body = {
+                api_base: $id('tm-api').value.trim(),
+                domain: $id('tm-domain').value.trim(),
+                register_region: ($id('tm-region').value || 'US').trim().toUpperCase(),
+            };
+            const admin = $id('tm-admin').value;
+            const site = $id('tm-site').value;
+            if (admin) body.admin_password = admin;
+            if (site) body.site_password = site;
+            try {
+                const r = await fetch('/api/temp-mail/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const j = await r.json();
+                if (j.ok) {
+                    showStatus('tmResult', 'ok', j.message || '已保存');
+                    toast('临时邮箱配置已保存');
+                    if (j.temp_mail) applyTempMailForm(j.temp_mail);
+                } else {
+                    showStatus('tmResult', 'err', j.error || '保存失败');
+                }
+            } catch (e) {
+                showStatus('tmResult', 'err', '保存失败: ' + e.message);
+            }
+        }
+
+        async function testTempMail() {
+            const body = {
+                api_base: $id('tm-api').value.trim(),
+                domain: $id('tm-domain').value.trim(),
+                register_region: ($id('tm-region').value || 'US').trim().toUpperCase(),
+            };
+            const admin = $id('tm-admin').value;
+            const site = $id('tm-site').value;
+            if (admin) body.admin_password = admin;
+            if (site) body.site_password = site;
+            showStatus('tmResult', 'info', '测试中...');
+            try {
+                const r = await fetch('/api/temp-mail/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const j = await r.json();
+                if (j.ok) {
+                    const domains = (j.domains || []).join(', ');
+                    showStatus('tmResult', 'ok', (j.message || 'OK') + (domains ? '<br>域名: ' + domains : '') + (j.version ? '<br>版本: ' + j.version : ''));
+                    toast('临时邮箱连接成功');
+                } else {
+                    showStatus('tmResult', 'err', j.error || '测试失败');
+                }
+            } catch (e) {
+                showStatus('tmResult', 'err', '测试失败: ' + e.message);
+            }
+        }
+
+        function showRegCaptcha(img, email) {
+            $id('reg-captcha-wrap').style.display = 'block';
+            $id('reg-captcha-img').src = img || '';
+            $id('reg-email-preview').textContent = email || '';
+            $id('btn-reg-submit').style.display = 'inline-flex';
+            $id('reg-icode').value = '';
+            $id('reg-icode').focus();
+        }
+
+        async function startAutoRegister() {
+            _regSessionId = null;
+            _regPassword = '';
+            $id('reg-captcha-wrap').style.display = 'none';
+            $id('btn-reg-submit').style.display = 'none';
+            showStatus('regResult', 'info', '创建临时邮箱并获取验证码...');
+            $id('btn-reg-start').disabled = true;
+            try {
+                const body = {
+                    region: $id('reg-region').value || 'US',
+                };
+                const dom = $id('reg-domain').value.trim();
+                if (dom) body.domain = dom;
+                const r = await fetch('/api/account/auto-register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const j = await r.json();
+                if (j.need_captcha || j.captcha_image) {
+                    _regSessionId = j.session_id;
+                    _regPassword = j.password || '';
+                    showRegCaptcha(j.captcha_image, j.email);
+                    showStatus('regResult', 'info', j.message || '请填写验证码后继续');
+                } else if (j.ok && j.logged_in) {
+                    showStatus('regResult', 'ok', '注册成功 userId=' + (j.saved && j.saved.user_id || ''));
+                    toast('注册并保存成功');
+                    loadAccounts();
+                } else {
+                    showStatus('regResult', 'err', j.error || JSON.stringify(j).slice(0, 200));
+                }
+            } catch (e) {
+                showStatus('regResult', 'err', e.message);
+            } finally {
+                $id('btn-reg-start').disabled = false;
+            }
+        }
+
+        async function refreshRegCaptcha() {
+            if (!_regSessionId) return startAutoRegister();
+            try {
+                const r = await fetch('/api/account/auto-register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: _regSessionId, refresh_captcha: true })
+                });
+                const j = await r.json();
+                if (j.captcha_image) {
+                    $id('reg-captcha-img').src = j.captcha_image;
+                    toast('验证码已刷新');
+                } else {
+                    toast(j.error || '刷新失败', true);
+                }
+            } catch (e) {
+                toast(e.message, true);
+            }
+        }
+
+        async function submitRegCaptcha() {
+            if (!_regSessionId) {
+                toast('请先点击开始注册', true);
+                return;
+            }
+            const icode = $id('reg-icode').value.trim();
+            if (!icode) {
+                toast('请输入验证码', true);
+                return;
+            }
+            showStatus('regResult', 'info', '提交验证码 → 等待邮件验证码 → 完成注册登录（约 1–2 分钟）...');
+            $id('btn-reg-submit').disabled = true;
+            try {
+                const r = await fetch('/api/account/auto-register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: _regSessionId, icode: icode })
+                });
+                const j = await r.json();
+                if (j.need_captcha || (j.captcha_image && !j.ok)) {
+                    if (j.session_id) _regSessionId = j.session_id;
+                    if (j.captcha_image) showRegCaptcha(j.captcha_image, j.email || $id('reg-email-preview').textContent);
+                    showStatus('regResult', 'err', j.error || '验证码错误，请重试');
+                    return;
+                }
+                if (j.ok && (j.logged_in || (j.saved && j.saved.ok))) {
+                    const uid = (j.saved && j.saved.user_id) || (j.tokens && j.tokens.user_id) || '';
+                    showStatus('regResult', 'ok',
+                        '✅ 注册成功<br>邮箱: <code>' + (j.email || '') + '</code><br>密码: <code>' + (j.password || _regPassword) + '</code><br>userId: ' + uid +
+                        '<br>已保存账号并进入保活（passToken + 临时邮箱自动取码）');
+                    toast('注册成功');
+                    _regSessionId = null;
+                    $id('reg-captcha-wrap').style.display = 'none';
+                    $id('btn-reg-submit').style.display = 'none';
+                    loadAccounts();
+                } else if (j.ok && j.registered && !j.logged_in) {
+                    showStatus('regResult', 'info',
+                        '注册成功但自动登录未完成<br>邮箱: <code>' + j.email + '</code><br>密码: <code>' + j.password + '</code><br>' + (j.message || ''));
+                } else {
+                    showStatus('regResult', 'err', j.error || j.message || '注册失败');
+                }
+            } catch (e) {
+                showStatus('regResult', 'err', e.message);
+            } finally {
+                $id('btn-reg-submit').disabled = false;
+            }
         }
 
         // === API Keys ===
@@ -598,7 +874,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                             ${a.is_valid ? '<span style="color:#22c55e;margin-left:8px;font-size:12px">'+_('valid')+'</span>' : '<span style="color:#94a3b8;margin-left:8px;font-size:12px">'+_('notVerified')+'</span>'}
                             ${a.last_test ? '<span style="color:var(--text-muted);margin-left:4px;font-size:11px">· ' + a.last_test + '</span>' : ''}
                         </div>
-                        ${a.email ? '<div class="info-line"><b>email:</b> <code>'+a.email+'</code>'+(a.auto_renew?' <span style="color:#38bdf8;font-size:11px">· 自动续期</span>':'')+(a.has_pass_token?' <span style="color:#a78bfa;font-size:11px">· passToken</span>':'')+'</div>' : ''}
+                        ${a.email ? '<div class="info-line"><b>email:</b> <code>'+a.email+'</code>'+(a.auto_renew?' <span style="color:#38bdf8;font-size:11px">· 自动续期</span>':'')+(a.has_pass_token?' <span style="color:#a78bfa;font-size:11px">· passToken</span>':'')+(a.has_mail_jwt?' <span style="color:#34d399;font-size:11px">· temp-mail</span>':'')+(a.region?' <span style="color:var(--text-muted);font-size:11px">· '+a.region+'</span>':'')+'</div>' : ''}
                         <div class="info-line"><b>token:</b> <code>${a.token_masked}</code></div>
                         ${a.last_renew ? '<div class="info-line"><b>renew:</b> '+a.last_renew+(a.renew_error?' <span style="color:#f87171">'+a.renew_error+'</span>':'')+'</div>' : ''}
                         <div class="actions">

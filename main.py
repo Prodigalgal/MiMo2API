@@ -94,10 +94,11 @@ def _cleanup_old_sessions():
 
 
 def _auto_renew_loop():
-    """Periodically renew MiMo web tokens via passToken ONLY.
+    """Periodically renew MiMo web tokens (keep-alive).
 
-    Never uses password login and never sends/mail-code retries.
-    If passToken is missing/invalid, mark error for user manual action.
+    1) passToken renew first
+    2) if fail and account has email+password+mail_jwt and temp-mail configured:
+       password login → send OTP → auto-read code from temp mail → re-login
 
     Interval from env MIMO2API_RENEW_INTERVAL_SECONDS (default 6h).
     First run delayed 60s after startup.
@@ -116,20 +117,29 @@ def _auto_renew_loop():
         accounts = list(config_manager.config.mimo_accounts)
         if not accounts:
             return
-        print(f"[AutoRenew] checking {len(accounts)} account(s) (passToken only)...")
+        print(f"[AutoRenew] checking {len(accounts)} account(s) (passToken + temp-mail OTP fallback)...")
         for i, acc in enumerate(accounts):
             if not getattr(acc, "auto_renew", True):
                 continue
-            if not getattr(acc, "pass_token", ""):
-                print(f"[AutoRenew] skip userId={acc.user_id}: no passToken (no auto mail-code)")
+            has_pt = bool(getattr(acc, "pass_token", ""))
+            has_mail_path = bool(
+                getattr(acc, "email", "")
+                and getattr(acc, "password", "")
+                and getattr(acc, "mail_jwt", "")
+            )
+            if not has_pt and not has_mail_path:
+                print(f"[AutoRenew] skip userId={acc.user_id}: no passToken and no mail_jwt path")
                 continue
             try:
-                # allow_password_fallback=False: never password / never OTP send
-                result = await _renew_one_account(i, allow_password_fallback=False)
+                result = await _renew_one_account(
+                    i,
+                    allow_password_fallback=False,
+                    auto_temp_mail_otp=True,
+                )
                 if result.get("ok"):
                     print(f"[AutoRenew] ok userId={acc.user_id}")
                 else:
-                    print(f"[AutoRenew] fail userId={acc.user_id}: {result.get('error')}")
+                    print(f"[AutoRenew] fail userId={acc.user_id}: {result.get('error') or result.get('message')}")
             except Exception as e:
                 print(f"[AutoRenew] error userId={getattr(acc, 'user_id', '?')}: {e}")
             time.sleep(3)
