@@ -273,8 +273,8 @@
                 <!-- 自动注册 -->
                 <div id="panel-register" class="tab-panel">
                     <div class="status info">使用已配置的 Cloudflare 临时邮箱自动注册小米账号。<br>
-                        地区默认非中国（US），密码随机。图片验证码默认用 <b>ddddocr 自动识别</b>（失败自动重试，仍失败再手动填）。<br>
-                        注册成功后自动登录申请 token 并保活；token 失效需 mail code 时从临时邮箱自动取码重登。</div>
+                        图片验证码默认 <b>ddddocr 自动识别</b>。批量：成功达到目标数即停止；失败会继续尝试直到上限。<br>
+                        参数默认从「临时邮箱」页读取，此处可临时覆盖本次运行。</div>
                     <div class="field"><label>注册地区（勿选 CN）</label>
                         <select id="reg-region" style="width:100%;padding:12px 16px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;color:var(--text)">
                             <option value="US" selected>United States (US)</option>
@@ -288,6 +288,26 @@
                     </div>
                     <div class="field"><label>域名（可选，留空用配置默认）</label>
                         <input type="text" id="reg-domain" placeholder="例如 edu.omnnu.xyz">
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label>成功目标数（达到即停，0=不提前停）</label>
+                            <input type="number" id="reg-success-target" min="0" max="50" value="1" title="成功注册多少个后结束">
+                        </div>
+                        <div class="field"><label>最大尝试次数</label>
+                            <input type="number" id="reg-batch-count" min="1" max="50" value="1" title="最多尝试多少次">
+                        </div>
+                        <div class="field"><label>并发数</label>
+                            <input type="number" id="reg-concurrent" min="1" max="10" value="1">
+                        </div>
+                        <div class="field"><label>并发间隔（秒）</label>
+                            <input type="number" id="reg-interval" min="0" max="300" step="0.5" value="3">
+                        </div>
+                        <div class="field"><label>OCR 重试次数</label>
+                            <input type="number" id="reg-captcha-retries" min="1" max="30" value="10">
+                        </div>
+                        <div class="field"><label>邮件验证码超时（秒）</label>
+                            <input type="number" id="reg-otp-timeout" min="30" max="600" value="120">
+                        </div>
                     </div>
                     <label class="toggle-row" style="margin:8px 0 12px">
                         <span class="toggle-label">自动 OCR 过图片验证码（ddddocr）</span>
@@ -306,9 +326,10 @@
                         <div class="info-line" style="font-size:12px;color:var(--text-muted);margin-bottom:8px">邮箱: <code id="reg-email-preview"></code> · 密码已随机生成</div>
                     </div>
                     <div class="btn-group">
-                        <button class="btn-primary" style="flex:1" id="btn-reg-start" onclick="startAutoRegister()">一键注册</button>
+                        <button class="btn-primary" style="flex:1" id="btn-reg-start" onclick="startAutoRegister()">单次注册</button>
+                        <button class="btn-success" style="flex:1" id="btn-reg-batch" onclick="startBatchRegister()">批量注册</button>
                         <button class="btn-outline" style="flex:1;display:none" id="btn-reg-retry-ocr" onclick="retryRegOcr()">再试 OCR</button>
-                        <button class="btn-success" style="flex:1;display:none" id="btn-reg-submit" onclick="submitRegCaptcha()">手动提交验证码</button>
+                        <button class="btn-outline" style="flex:1;display:none" id="btn-reg-submit" onclick="submitRegCaptcha()">手动提交验证码</button>
                     </div>
                     <div id="regResult"></div>
                 </div>
@@ -316,7 +337,7 @@
                 <!-- 临时邮箱配置 -->
                 <div id="panel-tempmail" class="tab-panel">
                     <div class="status info">对接 <a href="https://github.com/dreamhunter2333/cloudflare_temp_email" target="_blank" style="color:var(--primary)">cloudflare_temp_email</a> 自建实例。<br>
-                        管理口令对应后端 <code>ADMIN_PASSWORDS</code>，创建邮箱走 <code>POST /admin/new_address</code>（Header: x-admin-auth）。</div>
+                        管理口令对应后端 <code>ADMIN_PASSWORDS</code>。下方注册参数会保存到 config，批量/单次注册默认使用。</div>
                     <div class="field"><label>API 地址</label>
                         <input type="url" id="tm-api" placeholder="https://apimail.example.com">
                     </div>
@@ -332,6 +353,34 @@
                     <div class="field"><label>默认注册地区</label>
                         <input type="text" id="tm-region" placeholder="US" value="US">
                     </div>
+                    <div style="margin:16px 0 8px;font-size:13px;font-weight:600;color:var(--text-muted)">批量注册参数</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                        <div class="field"><label>成功目标数（达到即停，0=不提前停）</label>
+                            <input type="number" id="tm-success-target" min="0" max="50" value="1">
+                        </div>
+                        <div class="field"><label>最大尝试次数</label>
+                            <input type="number" id="tm-batch-count" min="1" max="50" value="1">
+                        </div>
+                        <div class="field"><label>并发数</label>
+                            <input type="number" id="tm-concurrent" min="1" max="10" value="1">
+                        </div>
+                        <div class="field"><label>并发间隔（秒）</label>
+                            <input type="number" id="tm-interval" min="0" max="300" step="0.5" value="3">
+                        </div>
+                        <div class="field"><label>OCR 重试次数</label>
+                            <input type="number" id="tm-captcha-retries" min="1" max="30" value="10">
+                        </div>
+                        <div class="field"><label>邮件验证码超时（秒）</label>
+                            <input type="number" id="tm-otp-timeout" min="30" max="600" value="120">
+                        </div>
+                    </div>
+                    <label class="toggle-row" style="margin:8px 0 12px">
+                        <span class="toggle-label">默认开启自动 OCR</span>
+                        <label class="switch">
+                            <input type="checkbox" id="tm-auto-captcha" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </label>
                     <div class="btn-group">
                         <button class="btn-outline" onclick="testTempMail()">测试连接</button>
                         <button class="btn-primary" onclick="saveTempMail()">保存配置</button>
@@ -423,7 +472,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             $id('panel-' + t).className = 'tab-panel active';
             if (t === 'accounts') loadAccounts();
             if (t === 'usage') loadUsage();
-            if (t === 'tempmail') loadTempMail();
+            if (t === 'tempmail' || t === 'register') loadTempMail();
         }
 
         // === 加载配置（仅 API Keys） ===
@@ -455,13 +504,73 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             if ($id('tm-api')) $id('tm-api').value = tm.api_base || '';
             if ($id('tm-domain')) $id('tm-domain').value = tm.domain || '';
             if ($id('tm-region')) $id('tm-region').value = tm.register_region || 'US';
-            // password fields: leave blank if masked; user re-enters only when changing
             if ($id('tm-admin') && tm.admin_password && tm.admin_password.indexOf('***') === -1) {
                 $id('tm-admin').value = tm.admin_password;
             }
             if ($id('tm-site') && tm.site_password && tm.site_password.indexOf('***') === -1) {
                 $id('tm-site').value = tm.site_password;
             }
+            // register params
+            if ($id('tm-batch-count')) $id('tm-batch-count').value = tm.batch_count != null ? tm.batch_count : 1;
+            if ($id('tm-success-target')) $id('tm-success-target').value = tm.success_target != null ? tm.success_target : 1;
+            if ($id('tm-concurrent')) $id('tm-concurrent').value = tm.concurrent != null ? tm.concurrent : 1;
+            if ($id('tm-interval')) $id('tm-interval').value = tm.concurrent_interval != null ? tm.concurrent_interval : 3;
+            if ($id('tm-captcha-retries')) $id('tm-captcha-retries').value = tm.captcha_retries != null ? tm.captcha_retries : 10;
+            if ($id('tm-otp-timeout')) $id('tm-otp-timeout').value = tm.otp_timeout != null ? tm.otp_timeout : 120;
+            if ($id('tm-auto-captcha')) $id('tm-auto-captcha').checked = tm.auto_captcha !== false;
+            // sync to register panel
+            applyRegFormFromTm(tm);
+        }
+
+        function applyRegFormFromTm(tm) {
+            if (!tm) return;
+            if ($id('reg-region') && tm.register_region) {
+                const sel = $id('reg-region');
+                if ([...sel.options].some(o => o.value === tm.register_region)) sel.value = tm.register_region;
+            }
+            if ($id('reg-domain') && tm.domain) $id('reg-domain').placeholder = tm.domain;
+            if ($id('reg-batch-count')) $id('reg-batch-count').value = tm.batch_count != null ? tm.batch_count : 1;
+            if ($id('reg-success-target')) $id('reg-success-target').value = tm.success_target != null ? tm.success_target : 1;
+            if ($id('reg-concurrent')) $id('reg-concurrent').value = tm.concurrent != null ? tm.concurrent : 1;
+            if ($id('reg-interval')) $id('reg-interval').value = tm.concurrent_interval != null ? tm.concurrent_interval : 3;
+            if ($id('reg-captcha-retries')) $id('reg-captcha-retries').value = tm.captcha_retries != null ? tm.captcha_retries : 10;
+            if ($id('reg-otp-timeout')) $id('reg-otp-timeout').value = tm.otp_timeout != null ? tm.otp_timeout : 120;
+            if ($id('reg-auto-ocr')) $id('reg-auto-ocr').checked = tm.auto_captcha !== false;
+        }
+
+        function collectTempMailBody() {
+            const body = {
+                api_base: $id('tm-api').value.trim(),
+                domain: $id('tm-domain').value.trim(),
+                register_region: ($id('tm-region').value || 'US').trim().toUpperCase(),
+                batch_count: parseInt($id('tm-batch-count').value, 10) || 1,
+                success_target: parseInt($id('tm-success-target').value, 10),
+                concurrent: parseInt($id('tm-concurrent').value, 10) || 1,
+                concurrent_interval: parseFloat($id('tm-interval').value) || 0,
+                captcha_retries: parseInt($id('tm-captcha-retries').value, 10) || 10,
+                otp_timeout: parseInt($id('tm-otp-timeout').value, 10) || 120,
+                auto_captcha: $id('tm-auto-captcha') ? $id('tm-auto-captcha').checked : true,
+            };
+            if (isNaN(body.success_target)) body.success_target = 1;
+            const admin = $id('tm-admin').value;
+            const site = $id('tm-site').value;
+            if (admin) body.admin_password = admin;
+            if (site) body.site_password = site;
+            return body;
+        }
+
+        function collectRegRunParams() {
+            return {
+                region: $id('reg-region').value || 'US',
+                domain: $id('reg-domain').value.trim(),
+                batch_count: parseInt($id('reg-batch-count').value, 10) || 1,
+                success_target: parseInt($id('reg-success-target').value, 10),
+                concurrent: parseInt($id('reg-concurrent').value, 10) || 1,
+                concurrent_interval: parseFloat($id('reg-interval').value) || 0,
+                captcha_retries: parseInt($id('reg-captcha-retries').value, 10) || 10,
+                otp_timeout: parseInt($id('reg-otp-timeout').value, 10) || 120,
+                auto_captcha: $id('reg-auto-ocr') ? $id('reg-auto-ocr').checked : true,
+            };
         }
 
         async function loadTempMail() {
@@ -473,15 +582,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
         }
 
         async function saveTempMail() {
-            const body = {
-                api_base: $id('tm-api').value.trim(),
-                domain: $id('tm-domain').value.trim(),
-                register_region: ($id('tm-region').value || 'US').trim().toUpperCase(),
-            };
-            const admin = $id('tm-admin').value;
-            const site = $id('tm-site').value;
-            if (admin) body.admin_password = admin;
-            if (site) body.site_password = site;
+            const body = collectTempMailBody();
             try {
                 const r = await fetch('/api/temp-mail/config', {
                     method: 'POST',
@@ -491,7 +592,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 const j = await r.json();
                 if (j.ok) {
                     showStatus('tmResult', 'ok', j.message || '已保存');
-                    toast('临时邮箱配置已保存');
+                    toast('临时邮箱/注册参数已保存');
                     if (j.temp_mail) applyTempMailForm(j.temp_mail);
                 } else {
                     showStatus('tmResult', 'err', j.error || '保存失败');
@@ -502,15 +603,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
         }
 
         async function testTempMail() {
-            const body = {
-                api_base: $id('tm-api').value.trim(),
-                domain: $id('tm-domain').value.trim(),
-                register_region: ($id('tm-region').value || 'US').trim().toUpperCase(),
-            };
-            const admin = $id('tm-admin').value;
-            const site = $id('tm-site').value;
-            if (admin) body.admin_password = admin;
-            if (site) body.site_password = site;
+            const body = collectTempMailBody();
             showStatus('tmResult', 'info', '测试中...');
             try {
                 const r = await fetch('/api/temp-mail/test', {
@@ -595,19 +688,20 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             _regSessionId = null;
             _regPassword = '';
             hideRegCaptcha();
-            const autoOcr = $id('reg-auto-ocr') ? $id('reg-auto-ocr').checked : true;
-            showStatus('regResult', 'info', autoOcr
-                ? '创建临时邮箱 → ddddocr 自动识别验证码（最多约 10 次）→ 收信取码 → 登录…（约 1–3 分钟）'
+            const p = collectRegRunParams();
+            showStatus('regResult', 'info', p.auto_captcha
+                ? '单次注册：临时邮箱 → OCR 验证码 → 收信取码 → 登录…'
                 : '创建临时邮箱并获取验证码…');
             $id('btn-reg-start').disabled = true;
+            if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = true;
             try {
                 const body = {
-                    region: $id('reg-region').value || 'US',
-                    auto_captcha: autoOcr,
-                    captcha_retries: 10,
+                    region: p.region,
+                    auto_captcha: p.auto_captcha,
+                    captcha_retries: p.captcha_retries,
+                    otp_timeout: p.otp_timeout,
                 };
-                const dom = $id('reg-domain').value.trim();
-                if (dom) body.domain = dom;
+                if (p.domain) body.domain = p.domain;
                 const r = await fetch('/api/account/auto-register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -619,6 +713,64 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 showStatus('regResult', 'err', e.message);
             } finally {
                 $id('btn-reg-start').disabled = false;
+                if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = false;
+            }
+        }
+
+        async function startBatchRegister() {
+            _regSessionId = null;
+            hideRegCaptcha();
+            const p = collectRegRunParams();
+            if (!p.auto_captcha) {
+                toast('批量注册必须开启自动 OCR', true);
+                return;
+            }
+            const target = isNaN(p.success_target) ? 1 : p.success_target;
+            showStatus('regResult', 'info',
+                '批量注册中… 成功目标 ' + (target > 0 ? target : '不限') +
+                ' / 最多尝试 ' + p.batch_count +
+                ' / 并发 ' + p.concurrent +
+                ' / 间隔 ' + p.concurrent_interval + 's');
+            $id('btn-reg-start').disabled = true;
+            if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = true;
+            try {
+                const body = {
+                    region: p.region,
+                    batch_count: p.batch_count,
+                    success_target: target,
+                    concurrent: p.concurrent,
+                    concurrent_interval: p.concurrent_interval,
+                    captcha_retries: p.captcha_retries,
+                    otp_timeout: p.otp_timeout,
+                    auto_captcha: true,
+                };
+                if (p.domain) body.domain = p.domain;
+                const r = await fetch('/api/account/auto-register-batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const j = await r.json();
+                if (j.results) {
+                    const lines = (j.results || []).map(function (x, i) {
+                        const ok = x.logged_in || x.saved_ok || x.registered;
+                        return (ok ? '✅' : '❌') + ' #' + (x.attempt || (i + 1)) +
+                            ' ' + (x.email || x.user_id || x.error || JSON.stringify(x).slice(0, 80));
+                    }).join('<br>');
+                    showStatus('regResult', j.ok ? 'ok' : 'err',
+                        (j.message || '') + '<br>' + lines);
+                    if (j.success > 0) {
+                        toast('成功 ' + j.success + ' 个');
+                        loadAccounts();
+                    }
+                } else {
+                    showStatus('regResult', 'err', j.error || j.message || '批量失败');
+                }
+            } catch (e) {
+                showStatus('regResult', 'err', e.message);
+            } finally {
+                $id('btn-reg-start').disabled = false;
+                if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = false;
             }
         }
 

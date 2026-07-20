@@ -1436,60 +1436,31 @@ async def test_temp_mail(request: Request, username: str = Depends(verify_admin)
     return result
 
 
-@router.post("/api/account/auto-register")
-async def auto_register_account(request: Request, username: str = Depends(verify_admin)):
-    """Auto-register Xiaomi account via temp mail.
-
-    Step 1 body: { region?, domain? } → need_captcha + captcha_image + session_id
-    Step 2 body: { session_id, icode } → complete register + login + save account
-    Refresh captcha: { session_id, refresh_captcha: true }
-    """
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-
-    from .xiaomi_register import (
-        auto_register,
-        refresh_captcha,
-        XiaomiRegisterError,
-    )
+async def _run_one_auto_register(
+    *,
+    mail_cfg,
+    region: str,
+    domain: str,
+    auto_captcha: bool,
+    captcha_retries: int,
+    otp_timeout: float,
+    password: str = "",
+    session_id: str = None,
+    icode: str = None,
+) -> dict:
+    """Single register + save. Used by single and batch endpoints."""
+    from .xiaomi_register import auto_register, XiaomiRegisterError
     from .temp_mail import TempMailError
-
-    tm = config_manager.get_temp_mail_settings()
-    mail_cfg = _mail_cfg_from_settings()
-    if not mail_cfg.is_configured():
-        return {"ok": False, "error": "请先在「临时邮箱」页配置 API 地址与管理口令"}
-
-    region = (data.get("region") or tm.register_region or "US").upper()
-    if region in ("CN", "ZH", "CHINA"):
-        return {"ok": False, "error": "注册地区不能选择中国，请使用 US / SG / JP 等"}
-
-    session_id = (data.get("session_id") or "").strip() or None
-    icode = (data.get("icode") or data.get("captcha") or "").strip() or None
-    # default: auto OCR on; pass auto_captcha=false to force manual only
-    auto_captcha = data.get("auto_captcha", True)
-    if isinstance(auto_captcha, str):
-        auto_captcha = auto_captcha.strip().lower() not in ("0", "false", "no", "off")
-    captcha_retries = int(data.get("captcha_retries") or 10)
-
-    if session_id and data.get("refresh_captcha"):
-        try:
-            return await refresh_captcha(session_id)
-        except XiaomiRegisterError as e:
-            return {"ok": False, "error": str(e), "code": e.code, "data": e.data}
 
     try:
         result = await auto_register(
             mail_cfg,
             region=region,
-            password=(data.get("password") or None),
+            password=password or None,
             icode=icode,
             session_id=session_id,
-            otp_timeout=float(data.get("otp_timeout") or 120),
-            domain=(data.get("domain") or tm.domain or None),
+            otp_timeout=otp_timeout,
+            domain=domain or None,
             auto_captcha=bool(auto_captcha),
             captcha_retries=captcha_retries,
         )
@@ -1508,7 +1479,6 @@ async def auto_register_account(request: Request, username: str = Depends(verify
     if result.get("need_captcha"):
         return result
 
-    # Save account when login succeeded
     if result.get("logged_in") and result.get("tokens"):
         tokens = result["tokens"]
         saved = await _validate_and_save(
@@ -1527,9 +1497,208 @@ async def auto_register_account(request: Request, username: str = Depends(verify
         result["saved"] = saved
         if not saved.get("ok"):
             result["save_error"] = saved.get("error")
-        return result
-
     return result
+
+
+@router.post("/api/account/auto-register")
+async def auto_register_account(request: Request, username: str = Depends(verify_admin)):
+    """Auto-register Xiaomi account via temp mail (single).
+
+    Body fields optional: region, domain, auto_captcha, captcha_retries, otp_timeout,
+    session_id, icode, refresh_captcha.
+    Defaults come from saved temp_mail register settings.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    from .xiaomi_register import refresh_captcha, XiaomiRegisterError
+
+    tm = config_manager.get_temp_mail_settings().normalized()
+    mail_cfg = _mail_cfg_from_settings()
+    if not mail_cfg.is_configured():
+        return {"ok": False, "error": "请先在「临时邮箱」页配置 API 地址与管理口令"}
+
+    region = (data.get("region") or tm.register_region or "US").upper()
+    if region in ("CN", "ZH", "CHINA"):
+        return {"ok": False, "error": "注册地区不能选择中国，请使用 US / SG / JP 等"}
+
+    session_id = (data.get("session_id") or "").strip() or None
+    icode = (data.get("icode") or data.get("captcha") or "").strip() or None
+    auto_captcha = data.get("auto_captcha", tm.auto_captcha)
+    if isinstance(auto_captcha, str):
+        auto_captcha = auto_captcha.strip().lower() not in ("0", "false", "no", "off")
+    captcha_retries = int(data.get("captcha_retries") or tm.captcha_retries)
+    otp_timeout = float(data.get("otp_timeout") or tm.otp_timeout)
+    domain = (data.get("domain") or tm.domain or "").strip()
+
+    if session_id and data.get("refresh_captcha"):
+        try:
+            return await refresh_captcha(session_id)
+        except XiaomiRegisterError as e:
+            return {"ok": False, "error": str(e), "code": e.code, "data": e.data}
+
+    return await _run_one_auto_register(
+        mail_cfg=mail_cfg,
+        region=region,
+        domain=domain,
+        auto_captcha=bool(auto_captcha),
+        captcha_retries=captcha_retries,
+        otp_timeout=otp_timeout,
+        password=(data.get("password") or ""),
+        session_id=session_id,
+        icode=icode,
+    )
+
+
+def _is_register_success(r: Optional[dict]) -> bool:
+    if not r or not r.get("ok"):
+        return False
+    return bool(r.get("logged_in") or r.get("saved_ok") or r.get("registered"))
+
+
+@router.post("/api/account/auto-register-batch")
+async def auto_register_batch(request: Request, username: str = Depends(verify_admin)):
+    """Batch auto-register with concurrency + early stop on success target.
+
+    Body (all optional, defaults from temp_mail settings):
+      count / batch_count: max attempts
+      success_target: stop when this many succeed (0 = no early stop)
+      concurrent: max parallel workers
+      concurrent_interval: seconds before starting next attempt
+      region, domain, auto_captcha, captcha_retries, otp_timeout
+    """
+    import asyncio
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    tm = config_manager.get_temp_mail_settings().normalized()
+    mail_cfg = _mail_cfg_from_settings()
+    if not mail_cfg.is_configured():
+        return {"ok": False, "error": "请先在「临时邮箱」页配置 API 地址与管理口令"}
+
+    region = (data.get("region") or tm.register_region or "US").upper()
+    if region in ("CN", "ZH", "CHINA"):
+        return {"ok": False, "error": "注册地区不能选择中国"}
+
+    from .config import _clamp_int, _clamp_float
+
+    max_attempts = _clamp_int(
+        data.get("count", data.get("batch_count", tm.batch_count)), tm.batch_count, 1, 50
+    )
+    success_target = _clamp_int(
+        data.get("success_target", tm.success_target), tm.success_target, 0, 50
+    )
+    if success_target > max_attempts:
+        success_target = max_attempts
+    concurrent = _clamp_int(data.get("concurrent", tm.concurrent), tm.concurrent, 1, 10)
+    interval = _clamp_float(
+        data.get("concurrent_interval", tm.concurrent_interval), tm.concurrent_interval, 0.0, 300.0
+    )
+    auto_captcha = data.get("auto_captcha", tm.auto_captcha)
+    if isinstance(auto_captcha, str):
+        auto_captcha = auto_captcha.strip().lower() not in ("0", "false", "no", "off")
+    captcha_retries = _clamp_int(data.get("captcha_retries", tm.captcha_retries), tm.captcha_retries, 1, 30)
+    otp_timeout = float(_clamp_int(data.get("otp_timeout", tm.otp_timeout), tm.otp_timeout, 30, 600))
+    domain = (data.get("domain") or tm.domain or "").strip()
+
+    if not auto_captcha:
+        return {"ok": False, "error": "批量注册必须开启自动 OCR（auto_captcha=true）"}
+
+    # Effective stop condition: reach success_target (if >0) or finish max_attempts
+    target = success_target if success_target > 0 else max_attempts
+
+    sem = asyncio.Semaphore(concurrent)
+    results: list = []
+    state = {"success": 0, "started": 0, "stop": False}
+    lock = asyncio.Lock()
+
+    def _slim(r: dict) -> dict:
+        slim = {
+            k: v
+            for k, v in r.items()
+            if k not in ("captcha_image", "tokens", "mail_jwt", "data", "login")
+        }
+        if r.get("tokens"):
+            slim["user_id"] = r["tokens"].get("user_id")
+        if r.get("saved"):
+            slim["saved_ok"] = bool(r["saved"].get("ok"))
+        return slim
+
+    async def worker(idx: int):
+        async with sem:
+            async with lock:
+                if state["stop"] or state["success"] >= target:
+                    state["stop"] = True
+                    return
+            r = await _run_one_auto_register(
+                mail_cfg=mail_cfg,
+                region=region,
+                domain=domain,
+                auto_captcha=True,
+                captcha_retries=captcha_retries,
+                otp_timeout=otp_timeout,
+            )
+            slim = _slim(r)
+            slim["attempt"] = idx + 1
+            async with lock:
+                results.append(slim)
+                if _is_register_success(slim):
+                    state["success"] += 1
+                    if state["success"] >= target:
+                        state["stop"] = True
+                        print(f"[BatchReg] success target reached: {state['success']}/{target}")
+
+    async def runner():
+        tasks = []
+        for i in range(max_attempts):
+            async with lock:
+                if state["stop"] or state["success"] >= target:
+                    break
+            if i > 0 and interval > 0:
+                await asyncio.sleep(interval)
+            async with lock:
+                if state["stop"] or state["success"] >= target:
+                    break
+                state["started"] += 1
+            tasks.append(asyncio.create_task(worker(i)))
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    await runner()
+
+    ok_n = state["success"]
+    attempted = len(results)
+    fail_n = attempted - ok_n
+    stopped_early = success_target > 0 and ok_n >= success_target and attempted < max_attempts
+    return {
+        "ok": ok_n >= target if success_target > 0 else fail_n == 0,
+        "total": attempted,
+        "max_attempts": max_attempts,
+        "success": ok_n,
+        "failed": fail_n,
+        "success_target": success_target,
+        "stopped_early": stopped_early,
+        "concurrent": concurrent,
+        "concurrent_interval": interval,
+        "region": region,
+        "results": results,
+        "message": (
+            f"批量注册完成：成功 {ok_n}"
+            + (f"/{success_target}（目标）" if success_target > 0 else f"/{attempted}")
+            + f"，尝试 {attempted}/{max_attempts}"
+            + (f"，提前结束" if stopped_early else "")
+            + f"（并发 {concurrent}，间隔 {interval}s）"
+        ),
+    }
 
 
 @router.post("/api/accounts/{idx}/renew")

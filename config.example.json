@@ -7,7 +7,14 @@
     "admin_password": "YOUR_ADMIN_PASSWORD",
     "domain": "",
     "site_password": "",
-    "register_region": "US"
+    "register_region": "US",
+    "batch_count": 5,
+    "success_target": 3,
+    "concurrent": 2,
+    "concurrent_interval": 3.0,
+    "captcha_retries": 10,
+    "otp_timeout": 120,
+    "auto_captcha": true
   },
   "mimo_accounts": [
     {

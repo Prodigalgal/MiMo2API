@@ -8,25 +8,82 @@ from typing import List, Optional
 from dataclasses import dataclass, asdict
 
 
+def _clamp_int(val, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(val)
+    except Exception:
+        return default
+    return max(lo, min(hi, n))
+
+
+def _clamp_float(val, default: float, lo: float, hi: float) -> float:
+    try:
+        n = float(val)
+    except Exception:
+        return default
+    return max(lo, min(hi, n))
+
+
 @dataclass
 class TempMailSettings:
-    """Cloudflare 临时邮箱（用户在 UI 配置，不写死）"""
+    """Cloudflare 临时邮箱 + 自动注册参数（全部在 UI 配置，不写死）"""
     api_base: str = ""
     admin_password: str = ""
     domain: str = ""
     site_password: str = ""
     # default registration region (must not be CN)
     register_region: str = "US"
+    # —— 自动注册精细参数 ——
+    # 单次批量最多尝试次数（上限）
+    batch_count: int = 1
+    # 成功达到此数量即结束（0=不提前结束，跑满 batch_count）
+    success_target: int = 1
+    # 最大并发注册数
+    concurrent: int = 1
+    # 启动每个并发任务之间的等待秒数
+    concurrent_interval: float = 3.0
+    # 图片验证码 OCR 最大重试次数
+    captcha_retries: int = 10
+    # 等待邮箱验证码超时（秒）
+    otp_timeout: int = 120
+    # 默认是否自动 OCR 图片验证码
+    auto_captcha: bool = True
+
+    def normalized(self) -> "TempMailSettings":
+        """Return a copy with values clamped to safe ranges."""
+        region = (self.register_region or "US").upper()
+        if region in ("CN", "ZH", "CHINA"):
+            region = "US"
+        batch = _clamp_int(self.batch_count, 1, 1, 50)
+        # success_target: 0 means no early stop; otherwise 1..batch
+        st = _clamp_int(self.success_target, 1, 0, 50)
+        if st > batch:
+            st = batch
+        return TempMailSettings(
+            api_base=(self.api_base or "").strip().rstrip("/"),
+            admin_password=self.admin_password or "",
+            domain=(self.domain or "").strip(),
+            site_password=self.site_password or "",
+            register_region=region,
+            batch_count=batch,
+            success_target=st,
+            concurrent=_clamp_int(self.concurrent, 1, 1, 10),
+            concurrent_interval=_clamp_float(self.concurrent_interval, 3.0, 0.0, 300.0),
+            captcha_retries=_clamp_int(self.captcha_retries, 10, 1, 30),
+            otp_timeout=_clamp_int(self.otp_timeout, 120, 30, 600),
+            auto_captcha=bool(self.auto_captcha),
+        )
 
     def to_dict(self, mask: bool = True) -> dict:
-        d = asdict(self)
-        if mask and self.admin_password:
-            d["admin_password"] = "***" if len(self.admin_password) <= 3 else (
-                self.admin_password[:1] + "***" + self.admin_password[-1:]
+        n = self.normalized()
+        d = asdict(n)
+        if mask and n.admin_password:
+            d["admin_password"] = "***" if len(n.admin_password) <= 3 else (
+                n.admin_password[:1] + "***" + n.admin_password[-1:]
             )
-        if mask and self.site_password:
-            d["site_password"] = "***" if self.site_password else ""
-        d["configured"] = bool((self.api_base or "").strip() and (self.admin_password or "").strip())
+        if mask and n.site_password:
+            d["site_password"] = "***" if n.site_password else ""
+        d["configured"] = bool(n.api_base and n.admin_password)
         return d
 
 
@@ -121,13 +178,7 @@ class Config:
                 for acc in self.mimo_accounts
             ],
             "tools_passthrough": self.tools_passthrough,
-            "temp_mail": {
-                "api_base": tm.api_base,
-                "admin_password": tm.admin_password,
-                "domain": tm.domain,
-                "site_password": tm.site_password,
-                "register_region": tm.register_region or "US",
-            },
+            "temp_mail": asdict(tm.normalized()),
         }
         if self.models:
             d["models"] = self.models
@@ -149,15 +200,30 @@ class ConfigManager:
         raw = data.get("temp_mail") or {}
         if not isinstance(raw, dict):
             raw = {}
-        fields = {k: raw.get(k, getattr(TempMailSettings, k, "")) for k in TempMailSettings.__dataclass_fields__}
-        # keep unmasked secrets if client sent ***
+        fields = TempMailSettings.__dataclass_fields__
+        def g(key, default=None):
+            if key in raw and raw[key] is not None:
+                return raw[key]
+            return default if default is not None else getattr(TempMailSettings, key, "")
+
+        auto_captcha = g("auto_captcha", True)
+        if isinstance(auto_captcha, str):
+            auto_captcha = auto_captcha.strip().lower() not in ("0", "false", "no", "off")
+
         return TempMailSettings(
-            api_base=str(fields.get("api_base") or ""),
-            admin_password=str(fields.get("admin_password") or ""),
-            domain=str(fields.get("domain") or ""),
-            site_password=str(fields.get("site_password") or ""),
-            register_region=str(fields.get("register_region") or "US"),
-        )
+            api_base=str(g("api_base", "") or ""),
+            admin_password=str(g("admin_password", "") or ""),
+            domain=str(g("domain", "") or ""),
+            site_password=str(g("site_password", "") or ""),
+            register_region=str(g("register_region", "US") or "US"),
+            batch_count=_clamp_int(g("batch_count", 1), 1, 1, 50),
+            success_target=_clamp_int(g("success_target", 1), 1, 0, 50),
+            concurrent=_clamp_int(g("concurrent", 1), 1, 1, 10),
+            concurrent_interval=_clamp_float(g("concurrent_interval", 3.0), 3.0, 0.0, 300.0),
+            captcha_retries=_clamp_int(g("captcha_retries", 10), 10, 1, 30),
+            otp_timeout=_clamp_int(g("otp_timeout", 120), 120, 30, 600),
+            auto_captcha=bool(auto_captcha),
+        ).normalized()
 
     def load(self):
         """加载配置"""
@@ -213,35 +279,55 @@ class ConfigManager:
             return self.config.temp_mail or TempMailSettings()
 
     def update_temp_mail(self, data: dict, *, keep_secrets_if_masked: bool = True) -> TempMailSettings:
-        """Update temp mail settings. If password fields are '***' keep previous."""
+        """Update temp mail + register settings. Password fields with '***' keep previous."""
         with self.lock:
-            prev = self.config.temp_mail or TempMailSettings()
-            api_base = (data.get("api_base") if data.get("api_base") is not None else prev.api_base) or ""
-            admin_password = data.get("admin_password")
-            site_password = data.get("site_password")
+            prev = (self.config.temp_mail or TempMailSettings()).normalized()
+            merged = {
+                "api_base": prev.api_base,
+                "admin_password": prev.admin_password,
+                "domain": prev.domain,
+                "site_password": prev.site_password,
+                "register_region": prev.register_region,
+                "batch_count": prev.batch_count,
+                "success_target": prev.success_target,
+                "concurrent": prev.concurrent,
+                "concurrent_interval": prev.concurrent_interval,
+                "captcha_retries": prev.captcha_retries,
+                "otp_timeout": prev.otp_timeout,
+                "auto_captcha": prev.auto_captcha,
+            }
+            for k in merged:
+                if k in data and data[k] is not None:
+                    merged[k] = data[k]
+
+            admin_password = merged["admin_password"]
+            site_password = merged["site_password"]
             if keep_secrets_if_masked:
-                if admin_password is None or str(admin_password).strip() in ("", "***") or (
-                    isinstance(admin_password, str) and admin_password.startswith("*") and admin_password.endswith("*") and len(admin_password) <= 6
+                if admin_password is None or str(admin_password) in ("", "***") or (
+                    isinstance(admin_password, str) and "***" in admin_password and len(admin_password) <= 8
                 ):
-                    # only treat exact mask placeholders as keep
-                    if admin_password is None or str(admin_password) in ("", "***") or (
-                        isinstance(admin_password, str) and "***" in admin_password and len(admin_password) <= 8
-                    ):
-                        admin_password = prev.admin_password
+                    admin_password = prev.admin_password
                 if site_password is None or str(site_password) in ("", "***"):
                     site_password = prev.site_password
-            domain = data.get("domain") if data.get("domain") is not None else prev.domain
-            region = data.get("register_region") if data.get("register_region") is not None else prev.register_region
-            region = (region or "US").upper()
-            if region in ("CN", "ZH", "CHINA"):
-                region = "US"
+
+            auto_captcha = merged["auto_captcha"]
+            if isinstance(auto_captcha, str):
+                auto_captcha = auto_captcha.strip().lower() not in ("0", "false", "no", "off")
+
             self.config.temp_mail = TempMailSettings(
-                api_base=str(api_base).strip().rstrip("/"),
+                api_base=str(merged.get("api_base") or "").strip().rstrip("/"),
                 admin_password=str(admin_password or ""),
-                domain=str(domain or "").strip(),
+                domain=str(merged.get("domain") or "").strip(),
                 site_password=str(site_password or ""),
-                register_region=region,
-            )
+                register_region=str(merged.get("register_region") or "US"),
+                batch_count=_clamp_int(merged.get("batch_count"), 1, 1, 50),
+                success_target=_clamp_int(merged.get("success_target"), 1, 0, 50),
+                concurrent=_clamp_int(merged.get("concurrent"), 1, 1, 10),
+                concurrent_interval=_clamp_float(merged.get("concurrent_interval"), 3.0, 0.0, 300.0),
+                captcha_retries=_clamp_int(merged.get("captcha_retries"), 10, 1, 30),
+                otp_timeout=_clamp_int(merged.get("otp_timeout"), 120, 30, 600),
+                auto_captcha=bool(auto_captcha),
+            ).normalized()
             self.save()
             return self.config.temp_mail
 
@@ -256,24 +342,22 @@ class ConfigManager:
             prev_tm = self.config.temp_mail or TempMailSettings()
             tm_raw = new_config.get("temp_mail")
             if isinstance(tm_raw, dict):
-                admin_pw = tm_raw.get("admin_password")
-                site_pw = tm_raw.get("site_password")
+                # reuse update_temp_mail merge logic without double-lock issues
+                payload = dict(tm_raw)
+                # temporarily assign via same rules
+                admin_pw = payload.get("admin_password")
+                site_pw = payload.get("site_password")
                 if admin_pw is None or str(admin_pw) in ("", "***") or (
                     isinstance(admin_pw, str) and "***" in admin_pw and len(admin_pw) <= 8
                 ):
-                    admin_pw = prev_tm.admin_password
+                    payload["admin_password"] = prev_tm.admin_password
                 if site_pw is None or str(site_pw) in ("", "***"):
-                    site_pw = prev_tm.site_password
-                region = (tm_raw.get("register_region") or prev_tm.register_region or "US").upper()
-                if region in ("CN", "ZH", "CHINA"):
-                    region = "US"
-                temp_mail = TempMailSettings(
-                    api_base=str(tm_raw.get("api_base", prev_tm.api_base) or "").strip().rstrip("/"),
-                    admin_password=str(admin_pw or ""),
-                    domain=str(tm_raw.get("domain", prev_tm.domain) or "").strip(),
-                    site_password=str(site_pw or ""),
-                    register_region=region,
-                )
+                    payload["site_password"] = prev_tm.site_password
+                # fill missing keys from previous
+                for k in TempMailSettings.__dataclass_fields__:
+                    if k not in payload or payload[k] is None:
+                        payload[k] = getattr(prev_tm, k)
+                temp_mail = self._parse_temp_mail({"temp_mail": payload})
             else:
                 temp_mail = prev_tm
             self.config = Config(
