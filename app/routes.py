@@ -1561,18 +1561,157 @@ def _is_register_success(r: Optional[dict]) -> bool:
     return bool(r.get("logged_in") or r.get("saved_ok") or r.get("registered"))
 
 
+# In-memory batch jobs (avoid reverse-proxy 504 on long sync batch)
+_BATCH_JOBS: dict = {}
+
+
+def _slim_register_result(r: dict) -> dict:
+    slim = {
+        k: v
+        for k, v in r.items()
+        if k not in ("captcha_image", "tokens", "mail_jwt", "data", "login")
+    }
+    if r.get("tokens"):
+        slim["user_id"] = r["tokens"].get("user_id")
+    if r.get("saved"):
+        slim["saved_ok"] = bool(r["saved"].get("ok"))
+    if r.get("region"):
+        slim["region"] = r.get("region")
+    return slim
+
+
+def _batch_job_public(job: dict) -> dict:
+    return {
+        "ok": True,
+        "job_id": job["id"],
+        "status": job["status"],
+        "total": len(job.get("results") or []),
+        "max_attempts": job.get("max_attempts"),
+        "success": job.get("success", 0),
+        "failed": job.get("failed", 0),
+        "success_target": job.get("success_target"),
+        "stopped_early": job.get("stopped_early", False),
+        "concurrent": job.get("concurrent"),
+        "concurrent_interval": job.get("concurrent_interval"),
+        "region": job.get("region"),
+        "results": job.get("results") or [],
+        "error": job.get("error") or "",
+        "message": job.get("message") or "",
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+    }
+
+
+async def _run_batch_job(job_id: str, params: dict) -> None:
+    """Background worker: long-running batch registration."""
+    import time as _time
+
+    job = _BATCH_JOBS.get(job_id)
+    if not job:
+        return
+
+    max_attempts = params["max_attempts"]
+    success_target = params["success_target"]
+    concurrent = params["concurrent"]
+    interval = params["interval"]
+    region = params["region"]
+    domain = params["domain"]
+    captcha_retries = params["captcha_retries"]
+    otp_timeout = params["otp_timeout"]
+    mail_cfg = params["mail_cfg"]
+    target = success_target if success_target > 0 else max_attempts
+
+    sem = asyncio.Semaphore(concurrent)
+    results: list = []
+    state = {"success": 0, "stop": False}
+    lock = asyncio.Lock()
+
+    async def worker(idx: int):
+        async with sem:
+            async with lock:
+                if state["stop"] or state["success"] >= target:
+                    state["stop"] = True
+                    return
+            r = await _run_one_auto_register(
+                mail_cfg=mail_cfg,
+                region=region,
+                domain=domain,
+                auto_captcha=True,
+                captcha_retries=captcha_retries,
+                otp_timeout=otp_timeout,
+            )
+            slim = _slim_register_result(r)
+            slim["attempt"] = idx + 1
+            async with lock:
+                results.append(slim)
+                job["results"] = list(results)
+                if _is_register_success(slim):
+                    state["success"] += 1
+                job["success"] = state["success"]
+                job["failed"] = len(results) - state["success"]
+                job["message"] = (
+                    f"进行中：成功 {state['success']}"
+                    + (f"/{success_target}" if success_target > 0 else "")
+                    + f"，已尝试 {len(results)}/{max_attempts}"
+                )
+                if state["success"] >= target:
+                    state["stop"] = True
+                    print(f"[BatchReg] job={job_id} success target {state['success']}/{target}")
+
+    try:
+        tasks = []
+        for i in range(max_attempts):
+            async with lock:
+                if state["stop"] or state["success"] >= target:
+                    break
+            if i > 0 and interval > 0:
+                await asyncio.sleep(interval)
+            async with lock:
+                if state["stop"] or state["success"] >= target:
+                    break
+            tasks.append(asyncio.create_task(worker(i)))
+        if tasks:
+            await asyncio.gather(*tasks)
+
+        ok_n = state["success"]
+        attempted = len(results)
+        fail_n = attempted - ok_n
+        stopped_early = success_target > 0 and ok_n >= success_target and attempted < max_attempts
+        job["status"] = "done"
+        job["success"] = ok_n
+        job["failed"] = fail_n
+        job["stopped_early"] = stopped_early
+        job["results"] = results
+        job["finished_at"] = _time.time()
+        job["message"] = (
+            f"批量注册完成：成功 {ok_n}"
+            + (f"/{success_target}（目标）" if success_target > 0 else f"/{attempted}")
+            + f"，尝试 {attempted}/{max_attempts}"
+            + ("，提前结束" if stopped_early else "")
+            + f"（并发 {concurrent}，间隔 {interval}s）"
+        )
+        job["ok"] = ok_n >= target if success_target > 0 else fail_n == 0
+        print(f"[BatchReg] job={job_id} done: {job['message']}")
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)[:300]
+        job["message"] = f"批量注册异常: {str(e)[:200]}"
+        job["finished_at"] = _time.time()
+        print(f"[BatchReg] job={job_id} error: {e}")
+
+
 @router.post("/api/account/auto-register-batch")
 async def auto_register_batch(request: Request, username: str = Depends(verify_admin)):
-    """Batch auto-register with concurrency + early stop on success target.
+    """Start batch auto-register as a background job (returns immediately).
 
-    Body (all optional, defaults from temp_mail settings):
-      count / batch_count: max attempts
-      success_target: stop when this many succeed (0 = no early stop)
-      concurrent: max parallel workers
-      concurrent_interval: seconds before starting next attempt
+    Avoids reverse-proxy 504 on long-running sync batches.
+    Poll GET /api/account/auto-register-batch/{job_id} for progress.
+
+    Body (optional, defaults from temp_mail settings):
+      batch_count, success_target, concurrent, concurrent_interval,
       region, domain, auto_captcha, captcha_retries, otp_timeout
     """
-    import asyncio
+    import time as _time
 
     try:
         data = await request.json()
@@ -1589,7 +1728,6 @@ async def auto_register_batch(request: Request, username: str = Depends(verify_a
     region = (data.get("region") or tm.register_region or "US").strip().upper()
     if region in ("CN", "ZH", "CHINA", "PRC"):
         return {"ok": False, "error": "注册地区不能选择中国，请使用 US / SG / JP 或 RANDOM"}
-    # Each worker re-resolves RANDOM so accounts get different regions
 
     from .config import _clamp_int, _clamp_float
 
@@ -1615,95 +1753,68 @@ async def auto_register_batch(request: Request, username: str = Depends(verify_a
     if not auto_captcha:
         return {"ok": False, "error": "批量注册必须开启自动 OCR（auto_captcha=true）"}
 
-    # Effective stop condition: reach success_target (if >0) or finish max_attempts
-    target = success_target if success_target > 0 else max_attempts
-
-    sem = asyncio.Semaphore(concurrent)
-    results: list = []
-    state = {"success": 0, "started": 0, "stop": False}
-    lock = asyncio.Lock()
-
-    def _slim(r: dict) -> dict:
-        slim = {
-            k: v
-            for k, v in r.items()
-            if k not in ("captcha_image", "tokens", "mail_jwt", "data", "login")
-        }
-        if r.get("tokens"):
-            slim["user_id"] = r["tokens"].get("user_id")
-        if r.get("saved"):
-            slim["saved_ok"] = bool(r["saved"].get("ok"))
-        return slim
-
-    async def worker(idx: int):
-        async with sem:
-            async with lock:
-                if state["stop"] or state["success"] >= target:
-                    state["stop"] = True
-                    return
-            # Pass RANDOM through so resolve_region picks a new country per attempt
-            r = await _run_one_auto_register(
-                mail_cfg=mail_cfg,
-                region=region,
-                domain=domain,
-                auto_captcha=True,
-                captcha_retries=captcha_retries,
-                otp_timeout=otp_timeout,
-            )
-            slim = _slim(r)
-            slim["attempt"] = idx + 1
-            if r.get("region"):
-                slim["region"] = r.get("region")
-            async with lock:
-                results.append(slim)
-                if _is_register_success(slim):
-                    state["success"] += 1
-                    if state["success"] >= target:
-                        state["stop"] = True
-                        print(f"[BatchReg] success target reached: {state['success']}/{target}")
-
-    async def runner():
-        tasks = []
-        for i in range(max_attempts):
-            async with lock:
-                if state["stop"] or state["success"] >= target:
-                    break
-            if i > 0 and interval > 0:
-                await asyncio.sleep(interval)
-            async with lock:
-                if state["stop"] or state["success"] >= target:
-                    break
-                state["started"] += 1
-            tasks.append(asyncio.create_task(worker(i)))
-        if tasks:
-            await asyncio.gather(*tasks)
-
-    await runner()
-
-    ok_n = state["success"]
-    attempted = len(results)
-    fail_n = attempted - ok_n
-    stopped_early = success_target > 0 and ok_n >= success_target and attempted < max_attempts
-    return {
-        "ok": ok_n >= target if success_target > 0 else fail_n == 0,
-        "total": attempted,
+    job_id = uuid.uuid4().hex
+    job = {
+        "id": job_id,
+        "status": "running",
+        "ok": True,
+        "results": [],
+        "success": 0,
+        "failed": 0,
         "max_attempts": max_attempts,
-        "success": ok_n,
-        "failed": fail_n,
         "success_target": success_target,
-        "stopped_early": stopped_early,
         "concurrent": concurrent,
         "concurrent_interval": interval,
         "region": region,
-        "results": results,
-        "message": (
-            f"批量注册完成：成功 {ok_n}"
-            + (f"/{success_target}（目标）" if success_target > 0 else f"/{attempted}")
-            + f"，尝试 {attempted}/{max_attempts}"
-            + (f"，提前结束" if stopped_early else "")
-            + f"（并发 {concurrent}，间隔 {interval}s）"
-        ),
+        "stopped_early": False,
+        "error": "",
+        "message": f"批量任务已启动：目标 {success_target or '不限'} / 最多 {max_attempts} 次",
+        "started_at": _time.time(),
+        "finished_at": None,
     }
+    _BATCH_JOBS[job_id] = job
+
+    # prune old jobs (keep last 30)
+    if len(_BATCH_JOBS) > 30:
+        finished = sorted(
+            [(k, v.get("finished_at") or 0) for k, v in _BATCH_JOBS.items() if v.get("status") != "running"],
+            key=lambda x: x[1],
+        )
+        for k, _ in finished[: max(0, len(_BATCH_JOBS) - 30)]:
+            _BATCH_JOBS.pop(k, None)
+
+    params = {
+        "max_attempts": max_attempts,
+        "success_target": success_target,
+        "concurrent": concurrent,
+        "interval": interval,
+        "region": region,
+        "domain": domain,
+        "captcha_retries": captcha_retries,
+        "otp_timeout": otp_timeout,
+        "mail_cfg": mail_cfg,
+    }
+    asyncio.create_task(_run_batch_job(job_id, params))
+
+    return {
+        **_batch_job_public(job),
+        "async": True,
+        "poll_url": f"/api/account/auto-register-batch/{job_id}",
+        "message": job["message"] + "（后台执行，请轮询进度，避免网关超时）",
+    }
+
+
+@router.get("/api/account/auto-register-batch/{job_id}")
+async def get_auto_register_batch(job_id: str, username: str = Depends(verify_admin)):
+    """Poll batch registration job status."""
+    job = _BATCH_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "批量任务不存在或已过期")
+    pub = _batch_job_public(job)
+    pub["ok"] = job.get("status") != "error"
+    if job.get("status") == "done":
+        pub["ok"] = bool(job.get("ok", True))
+    return pub
 
 
 @router.post("/api/accounts/{idx}/renew")

@@ -197,13 +197,10 @@
     <div class="container">
         <div class="header">
             <h1>MiMo2API</h1>
-            <p>小米 MiMo 模型 OpenAI 兼容 API</p>
-            <div style="position:absolute;top:40px;right:20px">
-                <button onclick="toggleLang()" id="langBtn" style="padding:6px 14px;background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:13px">🌐 EN</button>
-            </div>
+            <p>小米 MiMo OpenAI 兼容 API · 临时邮箱自动注册 · 多账号保活</p>
         </div>
 
-        <!-- 标签页：cURL / Cookie / 账号 / 用量统计 / API Key -->
+        <!-- 标签页 -->
         <div class="card" style="padding: 0; overflow: visible;">
             <div class="tabs">
                 <div class="tab active" onclick="switchTab('curl')">cURL</div>
@@ -273,7 +270,7 @@
                 <!-- 自动注册 -->
                 <div id="panel-register" class="tab-panel">
                     <div class="status info">使用「临时邮箱」页配置的 API 自动注册小米账号。<br>
-                        图片验证码默认 <b>ddddocr</b>。批量：成功达到目标数即停。地区选 <b>RANDOM</b> 时每个账号独立随机（不含中国）。<br>
+                        图片验证码默认 <b>ddddocr</b>。批量：后台异步执行 + 进度轮询（避免网关 504），成功达到目标数即停。地区选 <b>RANDOM</b> 时每个账号独立随机（不含中国）。<br>
                         本页参数可用「保存注册参数」写入 config，下次自动加载。</div>
                     <div class="field"><label>注册地区（勿选 CN；批量时 RANDOM 每个账号独立随机）</label>
                         <select id="reg-region" style="width:100%;padding:12px 16px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;color:var(--text)">
@@ -379,22 +376,22 @@
                 <!-- API Key 设置 -->
                 <div id="panel-apikey" class="tab-panel">
                     <div class="field">
-                        <label data-i18n="apiKeysLabel">多个 Key 用逗号分隔</label>
+                        <label>多个 Key 用逗号分隔</label>
                         <input type="text" id="apiKeys" placeholder="sk-key1, sk-key2, sk-key3">
                     </div>
                     <div class="field" style="margin-top:12px">
-                        <label data-i18n="adminPwdLabel">管理员密码</label>
-                        <input type="password" id="adminPassword" data-i18n-placeholder="adminPwdPH" placeholder="默认 admin，修改后刷新需重新登录">
+                        <label>管理员密码</label>
+                        <input type="password" id="adminPassword" placeholder="默认 admin，修改后刷新需重新登录">
                     </div>
                     <div class="field" style="margin-top:16px">
                         <label class="toggle-row">
-                            <span class="toggle-label" data-i18n="passthroughLabel">工具透传模式</span>
+                            <span class="toggle-label">工具透传模式</span>
                             <label class="switch">
                                 <input type="checkbox" id="passthroughToggle">
                                 <span class="slider"></span>
                             </label>
                         </label>
-                        <div style="font-size:12px;color:var(--text-muted);margin-top:4px" data-i18n="passthroughHint">跳过格式说明书，直接嵌入原始工具定义（适合 Roo Code / Cline）</div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:4px">跳过格式说明书，直接嵌入原始工具定义（适合 Roo Code / Cline）</div>
                     </div>
                     <button class="btn-primary" style="width:100%;margin-top:8px" onclick="saveKeys()">保存配置</button>
                     <div id="keysResult"></div>
@@ -417,15 +414,8 @@
     <div id="toast" class="toast"></div>
 
     <script>
-var _lang=localStorage.getItem('mimo_lang')||'zh';
-var _I={zh:{"curl":"cURL","cookie":"Cookie","email":"邮箱","accounts":"账号","apikey":"API Key","usage":"用量统计","parseCurl":"解析 cURL","parseFill":"解析填充 ↓","saveAcct":"保存账号","verifyBtn":"验证中...","saved":"已保存","saveFail":"保存失败","reqFail":"请求失败","refresh":"刷新","testAll":"测试全部","cleanupSessions":"清理过期会话","noAccts":"暂无配置账号","valid":"✅ 有效","notVerified":"⚪ 未验证","test":"测试","delete":"删除","loadFail":"加载失败","testing":"测试中...","testFail":"测试失败","noAcctTest":"无账号可测试","allTestDone":"有效","cleanup":"清理中...","cleanupFail":"清理失败: ","unknown":"未知","deleteConfirm":"确定删除此账号？","deleted":"已删除","deleteFail":"删除失败","usageNoData":"暂无用量数据","usageModel":"模型","usageReqs":"请求","usageInput":"输入","usageOutput":"输出","usageTotal":"总计","usageSum":"📋 合计","usageLoadFail":"加载失败: ","periodAll":"全部","periodWeek":"本周","periodToday":"今日","clearConfirm":"确定清空全部用量数据？此操作不可撤销。","cleared":"已清空","clearFail":"清空失败","configSaved":"配置已保存","saveConfigFail":"保存失败","parseFail":"解析失败，请检查 cURL 格式","parsing":"解析中...","parseOk":"解析成功","testConn":"测试连接","addAcct":"添加账号","connOk":"连接成功: ","connFail":"连接失败: ","acctAdded":"账号已添加","pasteCurl":"请粘贴 cURL 命令","pasteCookie":"请粘贴 Cookie 字符串","fieldsRequired":"请填写所有字段","filledFields":"已填充","filledFields2":"个字段","filledFields3":"缺少","filledFields4":"个","noValidFields":"未识别到有效字段","apiKeysLabel":"多个 Key 用逗号分隔","apiKeysPH":"sk-key1, sk-key2, sk-key3","saveConfig":"保存配置","mimoDesc":"小米 MiMo 模型 OpenAI 兼容 API","keysSaved":"配置已保存","saving":"保存中...","passthroughLabel":"工具透传模式","passthroughHint":"跳过格式说明书，直接嵌入原始工具定义（适合 Roo Code / Cline）","adminPwdLabel":"管理员密码","adminPwdPH":"默认 admin，修改后刷新需重新登录"},
-en:{"curl":"cURL","cookie":"Cookie","email":"Email","accounts":"Accounts","apikey":"API Key","usage":"Usage","parseCurl":"Parse cURL","parseFill":"Parse & Fill ↓","saveAcct":"Save Account","verifyBtn":"Verifying...","saved":"Saved","saveFail":"Save Failed","reqFail":"Request Failed","refresh":"Refresh","testAll":"Test All","cleanupSessions":"Cleanup Old Sessions","noAccts":"No accounts configured","valid":"✅ Active","notVerified":"⚪ Not Verified","test":"Test","delete":"Delete","loadFail":"Load Failed","testing":"Testing...","testFail":"Test Failed","noAcctTest":"No accounts to test","allTestDone":"valid","cleanup":"Cleaning...","cleanupFail":"Cleanup failed: ","unknown":"unknown","deleteConfirm":"Delete this account?","deleted":"Deleted","deleteFail":"Delete Failed","usageNoData":"No usage data","usageModel":"Model","usageReqs":"Requests","usageInput":"Input","usageOutput":"Output","usageTotal":"Total","usageSum":"📋 Total","usageLoadFail":"Load failed: ","periodAll":"All","periodWeek":"This Week","periodToday":"Today","clearConfirm":"Clear all usage data? This cannot be undone.","cleared":"Cleared","clearFail":"Clear failed","configSaved":"Config saved","saveConfigFail":"Save failed","parseFail":"Parse failed, check cURL format","parsing":"Parsing...","parseOk":"Parsed","testConn":"Test Connection","addAcct":"Add Account","connOk":"Connected: ","connFail":"Connection failed: ","acctAdded":"Account added","pasteCurl":"Please paste cURL command","pasteCookie":"Please paste Cookie string","fieldsRequired":"Please fill all fields","filledFields":"Filled","filledFields2":"field(s)","filledFields3":"missing","filledFields4":"","noValidFields":"No valid fields found","apiKeysLabel":"Separate multiple keys with commas","apiKeysPH":"sk-key1, sk-key2, sk-key3","saveConfig":"Save Config","mimoDesc":"Xiaomi MiMo OpenAI-compatible API","keysSaved":"Config saved","saving":"Saving...","passthroughLabel":"Tool Passthrough Mode","passthroughHint":"Skip format instructions, embed raw tool definitions (suitable for Roo Code / Cline)","adminPwdLabel":"Admin Password","adminPwdPH":"Default admin, refresh to re-login after change"}};
-function _(k){return (_I[_lang]||_I.zh)[k]||k}
-function toggleLang(){_lang=_lang==='zh'?'en':'zh';localStorage.setItem('mimo_lang',_lang);$id('langBtn').textContent=_lang==='zh'?'🌐 EN':'🌐 中';applyI18n()}
-function applyI18n(){document.querySelectorAll('[data-i18n]').forEach(function(el){var k=el.getAttribute('data-i18n');if(k)el.textContent=_(k)});document.querySelectorAll('[data-i18n-ph]').forEach(function(el){var k=el.getAttribute('data-i18n-ph');if(k)el.placeholder=_(k)});document.querySelector('.header p').textContent=_('mimoDesc');var tabs=document.querySelectorAll('.tab');var tkeys=['curl','cookie','email','register','tempmail','accounts','apikey','usage'];for(var i=0;i<tkeys.length&&i<tabs.length;i++)tabs[i].textContent=_(tkeys[i])||tabs[i].textContent}
-document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textContent=_lang==='zh'?'🌐 EN':'🌐 中';applyI18n()});
 
-        let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
+let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
         let _emailSessionId = null;
         let _regSessionId = null;
         let _regPassword = '';
@@ -440,6 +430,48 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
         function showStatus(id, type, msg) {
             $id(id).innerHTML = `<div class="status ${type}">${msg}</div>`;
         }
+
+
+        // === 安全 JSON 请求（避免 504/HTML 导致 Unexpected token '<'） ===
+        async function apiFetch(url, opts) {
+            opts = opts || {};
+            opts.credentials = opts.credentials || 'same-origin';
+            opts.headers = Object.assign({ 'Accept': 'application/json' }, opts.headers || {});
+            const r = await fetch(url, opts);
+            const ct = (r.headers.get('content-type') || '').toLowerCase();
+            const text = await r.text();
+            if (!text) {
+                if (!r.ok) throw new Error('HTTP ' + r.status + ' 空响应');
+                return {};
+            }
+            if (ct.indexOf('application/json') === -1 && text.trim().charAt(0) === '<') {
+                throw new Error(
+                    'HTTP ' + r.status + '：网关返回了 HTML（常见 504 超时）。' +
+                    (r.status === 504 ? ' 批量任务请使用后台轮询，勿同步等待。' : ' 请检查接口路径或登录状态。')
+                );
+            }
+            let j;
+            try { j = JSON.parse(text); }
+            catch (e) {
+                throw new Error('响应不是 JSON（HTTP ' + r.status + '）: ' + text.slice(0, 120));
+            }
+            if (!r.ok && j && (j.error || j.detail)) {
+                const err = j.error || (typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail));
+                throw new Error(err);
+            }
+            return j;
+        }
+
+        function formatBatchResults(j) {
+            const lines = (j.results || []).map(function (x, i) {
+                const ok = x.logged_in || x.saved_ok || x.registered;
+                return (ok ? '✅' : '❌') + ' #' + (x.attempt || (i + 1)) +
+                    ' ' + (x.email || x.user_id || x.error || '') +
+                    (x.region ? ' · ' + x.region : '');
+            }).join('<br>');
+            return (j.message || '') + (lines ? '<br>' + lines : '');
+        }
+
         function switchTab(t) {
             const keys = ['curl','cookie','email','register','tempmail','accounts','apikey','usage'];
             document.querySelectorAll('.tab').forEach((el, i) => {
@@ -704,12 +736,11 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                     otp_timeout: p.otp_timeout,
                 };
                 if (p.domain) body.domain = p.domain;
-                const r = await fetch('/api/account/auto-register', {
+                const j = await apiFetch('/api/account/auto-register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
-                const j = await r.json();
                 handleRegResponse(j);
             } catch (e) {
                 showStatus('regResult', 'err', e.message);
@@ -718,6 +749,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = false;
             }
         }
+
 
         async function startBatchRegister() {
             _regSessionId = null;
@@ -729,7 +761,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             }
             const target = isNaN(p.success_target) ? 1 : p.success_target;
             showStatus('regResult', 'info',
-                '批量注册中… 成功目标 ' + (target > 0 ? target : '不限') +
+                '启动批量任务… 成功目标 ' + (target > 0 ? target : '不限') +
                 ' / 最多尝试 ' + p.batch_count +
                 ' / 并发 ' + p.concurrent +
                 ' / 间隔 ' + p.concurrent_interval + 's');
@@ -747,29 +779,45 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                     auto_captcha: true,
                 };
                 if (p.domain) body.domain = p.domain;
-                const r = await fetch('/api/account/auto-register-batch', {
+                const j = await apiFetch('/api/account/auto-register-batch', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
-                const j = await r.json();
-                if (j.results) {
-                    const lines = (j.results || []).map(function (x, i) {
-                        const ok = x.logged_in || x.saved_ok || x.registered;
-                        return (ok ? '✅' : '❌') + ' #' + (x.attempt || (i + 1)) +
-                            ' ' + (x.email || x.user_id || x.error || JSON.stringify(x).slice(0, 80));
-                    }).join('<br>');
-                    showStatus('regResult', j.ok ? 'ok' : 'err',
-                        (j.message || '') + '<br>' + lines);
-                    if (j.success > 0) {
-                        toast('成功 ' + j.success + ' 个');
-                        loadAccounts();
+                // 异步任务：立即返回 job_id，轮询避免网关 504
+                if (j.job_id || j.async || j.status === 'running') {
+                    const jobId = j.job_id;
+                    showStatus('regResult', 'info', (j.message || '任务已启动') + '<br>job: <code>' + jobId + '</code>');
+                    let done = false;
+                    while (!done) {
+                        await new Promise(function (r) { setTimeout(r, 2500); });
+                        const st = await apiFetch('/api/account/auto-register-batch/' + jobId);
+                        if (st.status === 'running') {
+                            showStatus('regResult', 'info',
+                                (st.message || '进行中…') +
+                                '<br>成功 ' + (st.success || 0) +
+                                (st.success_target ? '/' + st.success_target : '') +
+                                ' · 已尝试 ' + (st.total || 0) + '/' + (st.max_attempts || '?')
+                            );
+                            continue;
+                        }
+                        done = true;
+                        showStatus('regResult', st.status === 'done' && st.ok !== false ? 'ok' : 'err',
+                            formatBatchResults(st));
+                        if ((st.success || 0) > 0) {
+                            toast('成功 ' + st.success + ' 个');
+                            loadAccounts();
+                        }
                     }
+                } else if (j.results) {
+                    // 兼容旧同步响应
+                    showStatus('regResult', j.ok ? 'ok' : 'err', formatBatchResults(j));
+                    if (j.success > 0) { toast('成功 ' + j.success + ' 个'); loadAccounts(); }
                 } else {
                     showStatus('regResult', 'err', j.error || j.message || '批量失败');
                 }
             } catch (e) {
-                showStatus('regResult', 'err', e.message);
+                showStatus('regResult', 'err', e.message || String(e));
             } finally {
                 $id('btn-reg-start').disabled = false;
                 if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = false;
@@ -863,18 +911,18 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(cfg)
                 });
-                showStatus('keysResult', 'ok', _('configSaved'));
+                showStatus('keysResult', 'ok', '配置已保存');
                 setTimeout(() => $id('keysResult').innerHTML = '', 2000);
             } catch (e) {
-                showStatus('keysResult', 'err', _('saveConfigFail'));
+                showStatus('keysResult', 'err', '保存失败');
             }
         }
 
         // === cURL 解析 → 测试 → 保存（三步流程） ===
         async function parseCurl() {
             const curl = $id('curl').value.trim();
-            if (!curl) { toast(_('pasteCurl'), true); return; }
-            showStatus('curlResult', 'info', _('parsing'));
+            if (!curl) { toast('请粘贴 cURL 命令', true); return; }
+            showStatus('curlResult', 'info', '解析中...');
             try {
                 const r = await fetch('/api/parse-curl', {
                     method: 'POST',
@@ -896,7 +944,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
 
         async function testParsed() {
             if (!parsed) return;
-            showStatus('testResult', 'info', _('testing'));
+            showStatus('testResult', 'info', '测试中...');
             try {
                 const r = await fetch('/api/test-account', {
                     method: 'POST',
@@ -912,7 +960,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
         async function saveParsed() {
             if (!parsed) return;
             const btn = event.target;
-            btn.disabled = true; btn.textContent = _('saving');
+            btn.disabled = true; btn.textContent = '保存中...';
             try {
                 cfg.mimo_accounts = cfg.mimo_accounts || [];
                 cfg.mimo_accounts.push(parsed);
@@ -924,16 +972,16 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 parsed = null;
                 $id('curl').value = '';
                 $id('curlResult').innerHTML = '';
-                toast(_('acctAdded'));
+                toast('账号已添加');
                 loadConfig();
-            } catch (e) { toast(_('saveFail'), true); }
-            finally { btn.disabled = false; btn.textContent = _('acctBtn'); }
+            } catch (e) { toast('保存失败', true); }
+            finally { btn.disabled = false; btn.textContent = '添加账号'; }
         }
 
         // === Cookie 解析 ===
         function parseCookieStr() {
             const raw = $id('c-raw').value.trim();
-            if (!raw) { toast(_('pasteCookie'), true); return; }
+            if (!raw) { toast('请粘贴 Cookie 字符串', true); return; }
             const parts = raw.split(';');
             const map = {};
             for (let p of parts) {
@@ -965,7 +1013,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             const ph = $id('c-ph').value.trim();
             if (!st || !uid || !ph) { toast('请填写所有字段', true); return; }
             const btn = $id('btn-save-cookie');
-            btn.disabled = true; btn.textContent = _('verifyBtn');
+            btn.disabled = true; btn.textContent = '验证中...';
             try {
                 const r = await fetch('/api/account/import-cookie', {
                     method: 'POST',
@@ -974,14 +1022,14 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 });
                 const d = await r.json();
                 if (d.ok) {
-                    toast(_('saved'));
+                    toast('已保存');
                     $id('c-st').value = ''; $id('c-uid').value = ''; $id('c-ph').value = '';
                     loadConfig();
                 } else {
                     toast(d.error || '保存失败', true);
                 }
-            } catch (e) { toast(_('reqFail'), true); }
-            finally { btn.disabled = false; btn.textContent = _('saveAcct'); }
+            } catch (e) { toast('请求失败', true); }
+            finally { btn.disabled = false; btn.textContent = '保存账号'; }
         }
 
         // === 邮箱+密码导入（mail code 需用户点击发送，不自动发/不自动重试） ===
@@ -992,7 +1040,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             const otp = ($id('e-otp').value || '').trim();
             const autoRenew = $id('e-autorenew').checked;
             if (!_emailSessionId && (!email || !password)) {
-                toast(_('fieldsRequired'), true);
+                toast('请填写所有字段', true);
                 return;
             }
             if (_emailSessionId && !otp) {
@@ -1000,7 +1048,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 return;
             }
             btn.disabled = true;
-            btn.textContent = _('verifyBtn');
+            btn.textContent = '验证中...';
             try {
                 const body = { email, password, auto_renew: autoRenew };
                 if (_emailSessionId) {
@@ -1025,7 +1073,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                     $id('btn-email-import').style.display = 'block';
                     $id('e-otp').value = '';
                     showStatus('emailResult', 'success', '已导入 userId=' + d.user_id);
-                    toast(_('acctAdded'));
+                    toast('账号已添加');
                     loadAccounts();
                     loadConfig();
                 } else {
@@ -1033,7 +1081,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                     toast(d.error || '导入失败', true);
                 }
             } catch (e) {
-                toast(_('reqFail'), true);
+                toast('请求失败', true);
             } finally {
                 btn.disabled = false;
                 btn.textContent = '导入账号';
@@ -1063,7 +1111,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                     toast(d.error || '发送失败', true);
                 }
             } catch (e) {
-                toast(_('reqFail'), true);
+                toast('请求失败', true);
             } finally {
                 btn.disabled = false;
                 btn.textContent = '发送验证码';
@@ -1085,7 +1133,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                         <div class="info-line">
                             <span class="status-dot" style="background:${a.is_valid ? '#22c55e' : '#64748b'}"></span>
                             <b>userId:</b> <code>${a.user_id}</code>
-                            ${a.is_valid ? '<span style="color:#22c55e;margin-left:8px;font-size:12px">'+_('valid')+'</span>' : '<span style="color:#94a3b8;margin-left:8px;font-size:12px">'+_('notVerified')+'</span>'}
+                            ${a.is_valid ? '<span style="color:#22c55e;margin-left:8px;font-size:12px">'+'✅ 有效'+'</span>' : '<span style="color:#94a3b8;margin-left:8px;font-size:12px">'+'⚪ 未验证'+'</span>'}
                             ${a.last_test ? '<span style="color:var(--text-muted);margin-left:4px;font-size:11px">· ' + a.last_test + '</span>' : ''}
                         </div>
                         ${a.email ? '<div class="info-line"><b>email:</b> <code>'+a.email+'</code>'+(a.auto_renew?' <span style="color:#38bdf8;font-size:11px">· 自动续期</span>':'')+(a.has_pass_token?' <span style="color:#a78bfa;font-size:11px">· passToken</span>':'')+(a.has_mail_jwt?' <span style="color:#34d399;font-size:11px">· temp-mail</span>':'')+(a.region?' <span style="color:var(--text-muted);font-size:11px">· '+a.region+'</span>':'')+'</div>' : ''}
@@ -1136,7 +1184,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                     toast(d.ok ? '续期成功: ' + (d.user_id || '') : ('续期失败: ' + (d.error || '')), !d.ok);
                 }
                 loadAccounts();
-            } catch (e) { toast(_('reqFail'), true); }
+            } catch (e) { toast('请求失败', true); }
             btn.disabled = false;
             btn.textContent = '续期';
         }
@@ -1154,7 +1202,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 const need = results.filter(x => x.need_manual || x.skipped).length;
                 toast('续期完成: ' + ok + ' 成功（仅 passToken；需验证码的请手动处理）');
                 loadAccounts();
-            } catch (e) { toast(_('reqFail'), true); }
+            } catch (e) { toast('请求失败', true); }
             btn.disabled = false;
             btn.textContent = '全部续期';
         }
@@ -1168,9 +1216,9 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 const d = await r.json();
                 toast(d.ok ? '✅ 有效: ' + (d.response || '').substring(0, 40) : '❌ ' + d.error, !d.ok);
                 loadAccounts();
-            } catch (e) { toast(_('testFail'), true); }
+            } catch (e) { toast('测试失败', true); }
             btn.disabled = false;
-            btn.textContent = _('testBtn');
+            btn.textContent = '测试';
         }
 
         async function testAll() {
@@ -1180,7 +1228,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             try {
                 const r = await fetch('/api/accounts');
                 const d = await r.json();
-                if (!d.accounts || !d.accounts.length) { toast(_('noAcctTest'), true); btn.disabled = false; btn.textContent = _('testAll'); return; }
+                if (!d.accounts || !d.accounts.length) { toast('无账号可测试', true); btn.disabled = false; btn.textContent = '测试全部'; return; }
                 let ok = 0;
                 for (let i = 0; i < d.accounts.length; i++) {
                     btn.textContent = '测试中...(' + (i + 1) + '/' + d.accounts.length + ')';
@@ -1192,32 +1240,32 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 }
                 toast(ok + '/' + d.accounts.length + ' 有效');
                 loadAccounts();
-            } catch (e) { toast(_('reqFail'), true); }
+            } catch (e) { toast('请求失败', true); }
             btn.disabled = false;
-            btn.textContent = _('testAll');
+            btn.textContent = '测试全部';
         }
 
         async function cleanupSessions() {
             const btn = event.target;
             btn.disabled = true;
-            btn.textContent = _('cleanup');
+            btn.textContent = '清理中...';
             try {
                 const r = await fetch('/api/cleanup', { method: 'POST' });
                 const d = await r.json();
                 toast(d.ok ? d.msg : '清理失败: ' + (d.msg || '未知'), !d.ok);
             } catch (e) { toast('清理失败: ' + e.message, true); }
             btn.disabled = false;
-            btn.textContent = _('cleanupSessions');
+            btn.textContent = '清理过期会话';
         }
 
         async function delAcct(i) {
-            if (!confirm(_('deleteConfirm'))) return;
+            if (!confirm('确定删除此账号？')) return;
             try {
                 await fetch('/api/accounts/' + i, { method: 'DELETE' });
-                toast(_('deleted'));
+                toast('已删除');
                 loadAccounts();
                 loadConfig();
-            } catch (e) { toast(_('deleteFail'), true); }
+            } catch (e) { toast('删除失败', true); }
         }
 
         // === 用量统计 ===
@@ -1237,7 +1285,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                     return;
                 }
 
-                let html = '<div class="usage-scroll"><table class="usage-tbl"><thead><tr><th class="model-cell">'+_('usageModel')+'</th><th>'+_('usageReqs')+'</th><th>'+_('usageInput')+'</th><th>'+_('usageOutput')+'</th><th>'+_('usageTotal')+'</th></tr></thead><tbody>';
+                let html = '<div class="usage-scroll"><table class="usage-tbl"><thead><tr><th class="model-cell">'+'模型'+'</th><th>'+'请求'+'</th><th>'+'输入'+'</th><th>'+'输出'+'</th><th>'+'总计'+'</th></tr></thead><tbody>';
                 for (const [model, m] of entries) {
                     html += `<tr>
                         <td class="model-cell">${model}</td>
@@ -1249,7 +1297,7 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
                 }
                 if (entries.length) {
                     html += `<tr class="total-row">
-                        <td class="model-cell">${_('usageSum')}</td>
+                        <td class="model-cell">${'📋 合计'}</td>
                         <td>${fmt(total.requests)}</td>
                         <td>${fmt(total.prompt_tokens)}</td>
                         <td>${fmt(total.completion_tokens)}</td>
@@ -1269,12 +1317,12 @@ document.addEventListener('DOMContentLoaded',function(){$id('langBtn').textConte
             loadUsage();
         }
         async function clearUsage() {
-            if (!confirm(_('clearConfirm'))) return;
+            if (!confirm('确定清空全部用量数据？此操作不可撤销。')) return;
             try {
                 const r = await fetch('/api/usage', { method: 'DELETE' });
                 const d = await r.json();
-                if (d.ok) { toast(_('cleared')); loadUsage(); }
-                else toast(_('clearFail'), true);
+                if (d.ok) { toast('已清空'); loadUsage(); }
+                else toast('清空失败', true);
             } catch (e) { toast('清空失败: ' + e.message, true); }
         }
 
