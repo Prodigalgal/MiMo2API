@@ -21,9 +21,21 @@ import string
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+
+# progress_cb(stage, message, email=None)
+ProgressCb = Optional[Callable[[str, str, Optional[str]], None]]
+
+
+def _emit(cb: ProgressCb, stage: str, message: str, email: Optional[str] = None) -> None:
+    if not cb:
+        return
+    try:
+        cb(stage, message, email)
+    except Exception:
+        pass
 
 from .temp_mail import (
     TempMailConfig,
@@ -334,6 +346,7 @@ async def start_register(
     auto_captcha: bool = True,
     captcha_retries: int = 8,
     otp_timeout: float = 120.0,
+    on_progress: ProgressCb = None,
 ) -> Dict[str, Any]:
     """Create temp mail + encrypt credentials.
 
@@ -342,16 +355,22 @@ async def start_register(
     Otherwise returns need_captcha for manual UI fill.
     """
     region = resolve_region(region)
+    _emit(on_progress, "region", f"选定注册地区 {region}")
     print(f"[Register] using region={region}")
 
     password = password or random_password()
+    _emit(on_progress, "temp_mail", "正在创建临时邮箱…")
     addr = await create_address(mail_cfg, domain=domain)
+    _emit(on_progress, "temp_mail", f"已获取邮箱 {addr.address}", addr.address)
+
     enc = encrypt_aes({"email": addr.address, "password": password})
     ep = enc["encryptedParams"]
+    _emit(on_progress, "encrypt", "凭证已加密", addr.address)
 
     device_id = _new_device_id()
     client = _client(device_id)
     try:
+        _emit(on_progress, "captcha", "正在获取图片验证码…", addr.address)
         img_bytes, captcha_b64 = await fetch_captcha(client)
         sid_session = uuid.uuid4().hex
         pending = PendingRegister(
@@ -383,8 +402,10 @@ async def start_register(
                 first_data_url=captcha_b64,
                 captcha_retries=captcha_retries,
                 otp_timeout=otp_timeout,
+                on_progress=on_progress,
             )
 
+        _emit(on_progress, "captcha", "等待手动填写图片验证码", addr.address)
         return {
             "ok": True,
             "need_captcha": True,
@@ -442,16 +463,21 @@ async def _auto_solve_and_finish(
     first_data_url: str = "",
     captcha_retries: int = 8,
     otp_timeout: float = 120.0,
+    on_progress: ProgressCb = None,
 ) -> Dict[str, Any]:
     """OCR captcha with retries, then complete register+login."""
     attempts: List[dict] = []
     img_bytes = first_image
     data_url = first_data_url or pending.captcha_b64
+    email = pending.email
 
     import asyncio
 
+    _emit(on_progress, "ocr", f"开始 OCR 识别验证码（最多 {captcha_retries} 次）", email)
+
     for i in range(max(1, captcha_retries)):
         if img_bytes is None:
+            _emit(on_progress, "captcha", f"刷新图片验证码（第 {i + 1} 次）", email)
             img_bytes, data_url = await fetch_captcha(client)
             pending.captcha_b64 = data_url
             pending.cookies = _dump_cookies(client)
@@ -465,11 +491,18 @@ async def _auto_solve_and_finish(
             "len": len(img_bytes or b""),
         })
         if not candidates or len(candidates[0]) < 3:
+            _emit(on_progress, "ocr", f"OCR 结果过短/为空，重试（{i + 1}/{captcha_retries}）", email)
             print(f"[Register] OCR empty/too short on try {i + 1}, refresh captcha")
             img_bytes = None
             await asyncio.sleep(0.4)
             continue
 
+        _emit(
+            on_progress,
+            "ocr",
+            f"OCR 识别为 {candidates[0]!r}，提交注册发信（{i + 1}/{captcha_retries}）",
+            email,
+        )
         captcha_ok = False
         last_j: dict = {}
         used_icode = ""
@@ -489,16 +522,21 @@ async def _auto_solve_and_finish(
                     code=int(code) if str(code).isdigit() else None,
                     data=j,
                 )
-            # captcha wrong for this candidate — try next case variant without refresh
+            _emit(on_progress, "ocr", f"验证码 {icode!r} 被拒，尝试变体", email)
             print(f"[Register] captcha reject icode={icode!r} try={i + 1}")
 
         if captcha_ok:
             pending.ticket_sent = True
             pending.cookies = _dump_cookies(client)
             _PENDING_REG[pending.session_id] = pending
+            _emit(on_progress, "send_ticket", f"图片验证通过（{used_icode}），注册邮件已发送", email)
             print(f"[Register] captcha OCR ok: {used_icode!r} after {i + 1} image(s)")
             result = await _finish_after_ticket_sent(
-                client, pending, mail_cfg, otp_timeout=otp_timeout
+                client,
+                pending,
+                mail_cfg,
+                otp_timeout=otp_timeout,
+                on_progress=on_progress,
             )
             result["captcha_auto"] = True
             result["captcha_attempts"] = attempts
@@ -609,8 +647,10 @@ async def _finish_after_ticket_sent(
     mail_cfg: TempMailConfig,
     *,
     otp_timeout: float = 120.0,
+    on_progress: ProgressCb = None,
 ) -> Dict[str, Any]:
     """After sendEmailRegTicket succeeded: wait mail code → verify → login."""
+    email = pending.email
     seen_mail_ids: set = set()
 
     # Snapshot existing mails so we only accept NEW codes
@@ -624,12 +664,14 @@ async def _finish_after_ticket_sent(
     except Exception:
         pass
 
+    _emit(on_progress, "wait_mail", f"等待注册验证码邮件（超时 {int(otp_timeout)}s）…", email)
     mail_code = await wait_for_code(
         mail_cfg,
         pending.mail_jwt,
         timeout=otp_timeout,
         seen_ids=seen_mail_ids,
     )
+    _emit(on_progress, "wait_mail", "已收到注册验证码，正在校验…", email)
     print(f"[Register] got register mail code for {pending.email}")
 
     j2 = await _verify_email_reg_ticket(client, pending, mail_code)
@@ -640,6 +682,7 @@ async def _finish_after_ticket_sent(
             code=int(code2) if str(code2).isdigit() else None,
             data=j2,
         )
+    _emit(on_progress, "verify", "注册验证码校验通过", email)
 
     pending.cookies = _dump_cookies(client)
     _PENDING_REG[pending.session_id] = pending
@@ -664,6 +707,7 @@ async def _finish_after_ticket_sent(
         try:
             from .xiaomi_login import renew_with_pass_token
 
+            _emit(on_progress, "login", "使用 passToken 换取 MiMo token…", email)
             t = await renew_with_pass_token(
                 email=pending.email,
                 pass_token=pass_token,
@@ -673,18 +717,23 @@ async def _finish_after_ticket_sent(
             )
             tokens = t.to_dict()
             login_result = {"ok": True, "tokens": tokens, "via": "passToken"}
+            _emit(on_progress, "login", "passToken 换票成功", email)
         except Exception as e:
             print(f"[Register] passToken exchange failed: {e}")
+            _emit(on_progress, "login", f"passToken 换票失败，尝试密码登录: {e}", email)
             login_result = {"ok": False, "error": str(e)[:200]}
 
     if not tokens:
         try:
-            from .xiaomi_login import login_with_password, send_pending_email_otp, XiaomiLoginError
+            from .xiaomi_login import login_with_password, send_pending_email_otp
 
+            _emit(on_progress, "login", "密码登录中…", email)
             login_result = await login_with_password(pending.email, pending.password)
             if login_result.get("need_otp") and login_result.get("session_id"):
                 otp_sid = login_result["session_id"]
+                _emit(on_progress, "login_otp", "登录需二次验证，发送邮件验证码…", email)
                 await send_pending_email_otp(otp_sid)
+                _emit(on_progress, "login_otp", "等待登录验证码邮件…", email)
                 # Must get a NEW mail (seen_ids already has register mail)
                 login_code = await wait_for_code(
                     mail_cfg,
@@ -692,6 +741,7 @@ async def _finish_after_ticket_sent(
                     timeout=otp_timeout,
                     seen_ids=seen_mail_ids,
                 )
+                _emit(on_progress, "login_otp", "已收到登录验证码，提交中…", email)
                 print(f"[Register] got login OTP for {pending.email}")
                 login_result = await login_with_password(
                     pending.email,
@@ -701,13 +751,16 @@ async def _finish_after_ticket_sent(
                 )
             if login_result.get("ok") and login_result.get("tokens"):
                 tokens = login_result["tokens"]
+                _emit(on_progress, "login", "密码/OTP 登录成功", email)
         except Exception as e:
             print(f"[Register] password login failed: {e}")
+            _emit(on_progress, "login", f"密码登录失败: {e}", email)
             login_result = {"ok": False, "error": str(e)[:200], "need_manual": True}
 
     session_id = pending.session_id
     if not tokens:
         _PENDING_REG.pop(session_id, None)
+        _emit(on_progress, "done", "注册成功但自动登录未完成", email)
         return {
             "ok": True,
             "registered": True,
@@ -721,6 +774,7 @@ async def _finish_after_ticket_sent(
         }
 
     _PENDING_REG.pop(session_id, None)
+    _emit(on_progress, "done", f"注册并登录成功 · region={pending.region}", email)
     return {
         "ok": True,
         "registered": True,
@@ -797,6 +851,7 @@ async def auto_register(
     domain: Optional[str] = None,
     auto_captcha: bool = True,
     captcha_retries: int = 8,
+    on_progress: ProgressCb = None,
 ) -> Dict[str, Any]:
     """
     High-level register entry:
@@ -824,6 +879,7 @@ async def auto_register(
                 mail_cfg,
                 captcha_retries=captcha_retries,
                 otp_timeout=otp_timeout,
+                on_progress=on_progress,
             )
         finally:
             await client.aclose()
@@ -839,4 +895,5 @@ async def auto_register(
         auto_captcha=auto_captcha,
         captcha_retries=captcha_retries,
         otp_timeout=otp_timeout,
+        on_progress=on_progress,
     )

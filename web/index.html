@@ -164,6 +164,29 @@
         .acct-pager .page-btn:hover:not(:disabled) { border-color: var(--primary); color: #fff; }
         .acct-pager .page-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
         .acct-pager .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* 批量注册实时日志 */
+        .reg-log-box {
+            margin-top: 12px; background: #0b1220; border: 1px solid var(--border);
+            border-radius: 10px; max-height: 280px; overflow: auto; font-family: 'SF Mono', Monaco, monospace;
+            font-size: 11px; line-height: 1.55; padding: 10px 12px; color: #94a3b8;
+        }
+        .reg-log-box .log-line { margin: 0 0 4px; word-break: break-all; }
+        .reg-log-box .log-ts { color: #64748b; margin-right: 6px; }
+        .reg-log-box .log-attempt { color: #38bdf8; margin-right: 4px; }
+        .reg-log-box .log-stage { color: #a78bfa; margin-right: 4px; }
+        .reg-log-box .log-email { color: #34d399; margin-right: 4px; }
+        .reg-log-box .log-err { color: #f87171; }
+        .reg-log-box .log-done { color: #4ade80; }
+        .reg-slots {
+            display: flex; flex-direction: column; gap: 6px; margin-top: 10px;
+        }
+        .reg-slot {
+            background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+            padding: 8px 10px; font-size: 12px; color: var(--text-muted);
+        }
+        .reg-slot.active { border-color: rgba(99,102,241,0.5); }
+        .reg-slot b { color: var(--text); }
         .empty { text-align: center; color: var(--text-muted); padding: 24px; font-size: 14px; }
 
         /* Toast */
@@ -350,10 +373,14 @@
                         <button class="btn-outline" style="flex:1" id="btn-reg-save" onclick="saveRegSettings()">保存注册参数</button>
                         <button class="btn-primary" style="flex:1" id="btn-reg-start" onclick="startAutoRegister()">单次注册</button>
                         <button class="btn-success" style="flex:1" id="btn-reg-batch" onclick="startBatchRegister()">批量注册</button>
+                        <button class="btn-danger" style="flex:1;display:none" id="btn-reg-stop" onclick="stopBatchRegister()">停止任务</button>
+                        <button class="btn-outline" style="flex:1;display:none" id="btn-reg-clear-log" onclick="clearBatchLogs()">清理日志</button>
                         <button class="btn-outline" style="flex:1;display:none" id="btn-reg-retry-ocr" onclick="retryRegOcr()">再试 OCR</button>
                         <button class="btn-outline" style="flex:1;display:none" id="btn-reg-submit" onclick="submitRegCaptcha()">手动提交验证码</button>
                     </div>
                     <div id="regResult"></div>
+                    <div id="regSlots" class="reg-slots" style="display:none"></div>
+                    <div id="regLogBox" class="reg-log-box" style="display:none"></div>
                 </div>
 
                 <!-- 临时邮箱配置（仅邮箱服务，不含注册参数） -->
@@ -437,6 +464,10 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
         let _emailSessionId = null;
         let _regSessionId = null;
         let _regPassword = '';
+        // 批量注册任务（内存 job，切页可恢复）
+        let _batchJobId = localStorage.getItem('mimo_batch_job_id') || '';
+        let _batchPollTimer = null;
+        let _batchPolling = false;
         // 账号列表分页
         let _acctList = [];
         let _acctPage = 1;
@@ -494,6 +525,180 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
             return (j.message || '') + (lines ? '<br>' + lines : '');
         }
 
+        function _fmtLogTime(ts) {
+            if (!ts) return '';
+            const d = new Date((ts < 1e12 ? ts * 1000 : ts));
+            const pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+            return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+        }
+
+        function renderBatchProgress(st) {
+            // summary
+            const running = st.status === 'running';
+            const type = st.status === 'error' ? 'err' : (running ? 'info' : (st.ok === false ? 'err' : 'ok'));
+            let summary = (st.message || '') +
+                (st.job_id ? '<br>job: <code>' + st.job_id + '</code>' : '') +
+                '<br>成功 ' + (st.success || 0) +
+                (st.success_target ? '/' + st.success_target : '') +
+                ' · 已尝试 ' + (st.total || 0) + '/' + (st.max_attempts || '?') +
+                (st.status ? ' · 状态 ' + st.status : '');
+            if ((st.results || []).length) {
+                summary += '<br>' + formatBatchResults(st).replace(st.message || '', '').replace(/^<br>/, '');
+            }
+            showStatus('regResult', type, summary);
+
+            // slots
+            const slotsEl = $id('regSlots');
+            if (slotsEl) {
+                const slots = st.slots || [];
+                if (slots.length) {
+                    slotsEl.style.display = 'flex';
+                    slotsEl.innerHTML = slots.map(function (s) {
+                        return '<div class="reg-slot' + (s.active ? ' active' : '') + '">' +
+                            '<b>#' + (s.attempt || '-') + '</b> ' +
+                            (s.email ? '<code>' + s.email + '</code> ' : '') +
+                            '<span style="color:#a78bfa">[' + (s.stage || '') + ']</span> ' +
+                            (s.message || '') +
+                            '</div>';
+                    }).join('');
+                } else {
+                    slotsEl.style.display = 'none';
+                    slotsEl.innerHTML = '';
+                }
+            }
+
+            // logs (newest at bottom, auto scroll)
+            const box = $id('regLogBox');
+            if (box) {
+                const logs = st.logs || [];
+                if (logs.length) {
+                    box.style.display = 'block';
+                    box.innerHTML = logs.map(function (L) {
+                        const cls = (L.stage === 'error' || L.stage === 'cancelled') ? ' log-err' :
+                            (L.stage === 'done' || L.stage === 'job' && (L.message || '').indexOf('完成') >= 0 ? ' log-done' : '');
+                        return '<div class="log-line' + cls + '">' +
+                            '<span class="log-ts">' + _fmtLogTime(L.ts) + '</span>' +
+                            (L.attempt ? '<span class="log-attempt">#' + L.attempt + '</span>' : '') +
+                            '<span class="log-stage">[' + (L.stage || '') + ']</span>' +
+                            (L.email ? '<span class="log-email">' + L.email + '</span>' : '') +
+                            (L.message || '') +
+                            '</div>';
+                    }).join('');
+                    box.scrollTop = box.scrollHeight;
+                } else if (!running) {
+                    // keep hidden if empty after clear
+                }
+            }
+
+            // buttons
+            if ($id('btn-reg-stop')) $id('btn-reg-stop').style.display = running ? 'inline-flex' : 'none';
+            if ($id('btn-reg-clear-log')) $id('btn-reg-clear-log').style.display = (st.logs && st.logs.length) || !running ? 'inline-flex' : (running ? 'inline-flex' : 'none');
+            if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = running;
+            if ($id('btn-reg-start')) $id('btn-reg-start').disabled = running;
+        }
+
+        function stopBatchPoll() {
+            _batchPolling = false;
+            if (_batchPollTimer) {
+                clearTimeout(_batchPollTimer);
+                _batchPollTimer = null;
+            }
+        }
+
+        async function pollBatchJobOnce() {
+            if (!_batchJobId) return null;
+            try {
+                const st = await apiFetch('/api/account/auto-register-batch/' + _batchJobId);
+                st.job_id = st.job_id || _batchJobId;
+                renderBatchProgress(st);
+                return st;
+            } catch (e) {
+                if (String(e.message || e).indexOf('不存在') >= 0 || String(e.message || e).indexOf('404') >= 0) {
+                    localStorage.removeItem('mimo_batch_job_id');
+                    _batchJobId = '';
+                    stopBatchPoll();
+                }
+                showStatus('regResult', 'err', e.message || String(e));
+                return null;
+            }
+        }
+
+        async function startBatchPollLoop() {
+            if (_batchPolling || !_batchJobId) return;
+            _batchPolling = true;
+            const loop = async function () {
+                if (!_batchPolling || !_batchJobId) return;
+                const st = await pollBatchJobOnce();
+                if (!st) { _batchPolling = false; return; }
+                if (st.status === 'running') {
+                    _batchPollTimer = setTimeout(loop, 1500);
+                    return;
+                }
+                // finished
+                stopBatchPoll();
+                if ((st.success || 0) > 0) {
+                    toast('成功 ' + st.success + ' 个');
+                    loadAccounts();
+                }
+            };
+            await loop();
+        }
+
+        async function resumeBatchJobIfAny() {
+            // Prefer localStorage job; else ask server for latest running
+            let id = localStorage.getItem('mimo_batch_job_id') || _batchJobId || '';
+            if (!id) {
+                try {
+                    const list = await apiFetch('/api/account/auto-register-batch');
+                    if (list.latest_running) id = list.latest_running;
+                    else if (list.jobs && list.jobs[0]) {
+                        // show last finished briefly
+                        renderBatchProgress(list.jobs[0]);
+                        return;
+                    }
+                } catch (e) { return; }
+            }
+            if (!id) return;
+            _batchJobId = id;
+            localStorage.setItem('mimo_batch_job_id', id);
+            await startBatchPollLoop();
+        }
+
+        async function stopBatchRegister() {
+            if (!_batchJobId) return;
+            try {
+                const st = await apiFetch('/api/account/auto-register-batch/' + _batchJobId + '/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}',
+                });
+                renderBatchProgress(st);
+                toast('已请求停止');
+            } catch (e) {
+                toast(e.message || '停止失败', true);
+            }
+        }
+
+        async function clearBatchLogs() {
+            if (!_batchJobId) {
+                if ($id('regLogBox')) { $id('regLogBox').innerHTML = ''; $id('regLogBox').style.display = 'none'; }
+                if ($id('regSlots')) { $id('regSlots').innerHTML = ''; $id('regSlots').style.display = 'none'; }
+                return;
+            }
+            try {
+                const st = await apiFetch('/api/account/auto-register-batch/' + _batchJobId + '/clear-logs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}',
+                });
+                renderBatchProgress(st);
+                if ($id('regLogBox')) { $id('regLogBox').innerHTML = ''; }
+                toast('日志已清理');
+            } catch (e) {
+                toast(e.message || '清理失败', true);
+            }
+        }
+
         function switchTab(t) {
             const keys = ['curl','cookie','email','register','tempmail','accounts','apikey','usage'];
             document.querySelectorAll('.tab').forEach((el, i) => {
@@ -503,7 +708,11 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
             $id('panel-' + t).className = 'tab-panel active';
             if (t === 'accounts') loadAccounts();
             if (t === 'usage') loadUsage();
-            if (t === 'tempmail' || t === 'register') loadTempMail();
+            if (t === 'tempmail') loadTempMail();
+            if (t === 'register') {
+                loadTempMail();
+                resumeBatchJobIfAny();
+            }
         }
 
         // === 加载配置（仅 API Keys） ===
@@ -774,6 +983,11 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
 
 
         async function startBatchRegister() {
+            if (_batchPolling && _batchJobId) {
+                toast('已有任务进行中，可切换页面后回来查看进度', true);
+                await resumeBatchJobIfAny();
+                return;
+            }
             _regSessionId = null;
             hideRegCaptcha();
             const p = collectRegRunParams();
@@ -787,6 +1001,8 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
                 ' / 最多尝试 ' + p.batch_count +
                 ' / 并发 ' + p.concurrent +
                 ' / 间隔 ' + p.concurrent_interval + 's');
+            if ($id('regLogBox')) { $id('regLogBox').style.display = 'block'; $id('regLogBox').innerHTML = ''; }
+            if ($id('regSlots')) { $id('regSlots').style.display = 'none'; $id('regSlots').innerHTML = ''; }
             $id('btn-reg-start').disabled = true;
             if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = true;
             try {
@@ -806,34 +1022,13 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
-                // 异步任务：立即返回 job_id，轮询避免网关 504
                 if (j.job_id || j.async || j.status === 'running') {
-                    const jobId = j.job_id;
-                    showStatus('regResult', 'info', (j.message || '任务已启动') + '<br>job: <code>' + jobId + '</code>');
-                    let done = false;
-                    while (!done) {
-                        await new Promise(function (r) { setTimeout(r, 2500); });
-                        const st = await apiFetch('/api/account/auto-register-batch/' + jobId);
-                        if (st.status === 'running') {
-                            showStatus('regResult', 'info',
-                                (st.message || '进行中…') +
-                                '<br>成功 ' + (st.success || 0) +
-                                (st.success_target ? '/' + st.success_target : '') +
-                                ' · 已尝试 ' + (st.total || 0) + '/' + (st.max_attempts || '?')
-                            );
-                            continue;
-                        }
-                        done = true;
-                        showStatus('regResult', st.status === 'done' && st.ok !== false ? 'ok' : 'err',
-                            formatBatchResults(st));
-                        if ((st.success || 0) > 0) {
-                            toast('成功 ' + st.success + ' 个');
-                            loadAccounts();
-                        }
-                    }
+                    _batchJobId = j.job_id;
+                    localStorage.setItem('mimo_batch_job_id', _batchJobId);
+                    renderBatchProgress(j);
+                    await startBatchPollLoop();
                 } else if (j.results) {
-                    // 兼容旧同步响应
-                    showStatus('regResult', j.ok ? 'ok' : 'err', formatBatchResults(j));
+                    renderBatchProgress(j);
                     if (j.success > 0) { toast('成功 ' + j.success + ' 个'); loadAccounts(); }
                 } else {
                     showStatus('regResult', 'err', j.error || j.message || '批量失败');
@@ -841,8 +1036,10 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
             } catch (e) {
                 showStatus('regResult', 'err', e.message || String(e));
             } finally {
-                $id('btn-reg-start').disabled = false;
-                if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = false;
+                if (!_batchPolling) {
+                    $id('btn-reg-start').disabled = false;
+                    if ($id('btn-reg-batch')) $id('btn-reg-batch').disabled = false;
+                }
             }
         }
 
@@ -1426,6 +1623,8 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
 
         // === 初始化 ===
         loadConfig();
+        // 恢复未结束的批量注册进度（内存 job + localStorage job_id）
+        setTimeout(function () { resumeBatchJobIfAny(); }, 300);
     </script>
 </body>
 </html>

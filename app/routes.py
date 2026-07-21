@@ -1447,6 +1447,7 @@ async def _run_one_auto_register(
     password: str = "",
     session_id: str = None,
     icode: str = None,
+    on_progress=None,
 ) -> dict:
     """Single register + save. Used by single and batch endpoints."""
     from .xiaomi_register import auto_register, XiaomiRegisterError
@@ -1463,8 +1464,14 @@ async def _run_one_auto_register(
             domain=domain or None,
             auto_captcha=bool(auto_captcha),
             captcha_retries=captcha_retries,
+            on_progress=on_progress,
         )
     except XiaomiRegisterError as e:
+        if on_progress:
+            try:
+                on_progress("error", str(e), None)
+            except Exception:
+                pass
         out = {"ok": False, "error": str(e), "code": e.code, "data": e.data}
         if e.data and e.data.get("captcha_image"):
             out["captcha_image"] = e.data["captcha_image"]
@@ -1472,14 +1479,30 @@ async def _run_one_auto_register(
             out["session_id"] = session_id
         return out
     except TempMailError as e:
+        if on_progress:
+            try:
+                on_progress("error", str(e), None)
+            except Exception:
+                pass
         return {"ok": False, "error": str(e), "data": e.data}
     except Exception as e:
+        if on_progress:
+            try:
+                on_progress("error", str(e)[:200], None)
+            except Exception:
+                pass
         return {"ok": False, "error": f"自动注册失败: {str(e)[:200]}"}
 
     if result.get("need_captcha"):
         return result
 
     if result.get("logged_in") and result.get("tokens"):
+        email = result.get("email") or ""
+        if on_progress:
+            try:
+                on_progress("save", "正在保存账号到配置…", email)
+            except Exception:
+                pass
         tokens = result["tokens"]
         saved = await _validate_and_save(
             tokens.get("service_token", ""),
@@ -1497,6 +1520,16 @@ async def _run_one_auto_register(
         result["saved"] = saved
         if not saved.get("ok"):
             result["save_error"] = saved.get("error")
+            if on_progress:
+                try:
+                    on_progress("error", f"保存失败: {saved.get('error')}", email)
+                except Exception:
+                    pass
+        elif on_progress:
+            try:
+                on_progress("save", f"账号已保存 userId={saved.get('user_id')}", email)
+            except Exception:
+                pass
     return result
 
 
@@ -1561,8 +1594,9 @@ def _is_register_success(r: Optional[dict]) -> bool:
     return bool(r.get("logged_in") or r.get("saved_ok") or r.get("registered"))
 
 
-# In-memory batch jobs (avoid reverse-proxy 504 on long sync batch)
+# In-memory batch jobs (logs + slots; not persisted)
 _BATCH_JOBS: dict = {}
+_BATCH_LOG_MAX = 300  # ring buffer cap
 
 
 def _slim_register_result(r: dict) -> dict:
@@ -1580,7 +1614,39 @@ def _slim_register_result(r: dict) -> dict:
     return slim
 
 
+def _job_append_log(job: dict, *, attempt: int, stage: str, message: str, email: str = "") -> None:
+    import time as _time
+
+    logs = job.setdefault("logs", [])
+    entry = {
+        "ts": _time.time(),
+        "attempt": attempt,
+        "email": email or "",
+        "stage": stage,
+        "message": (message or "")[:300],
+    }
+    logs.append(entry)
+    if len(logs) > _BATCH_LOG_MAX:
+        del logs[: len(logs) - _BATCH_LOG_MAX]
+    # live slot for this attempt
+    slots = job.setdefault("slots", {})
+    slots[str(attempt)] = {
+        "attempt": attempt,
+        "email": email or slots.get(str(attempt), {}).get("email") or "",
+        "stage": stage,
+        "message": (message or "")[:300],
+        "ts": entry["ts"],
+        "active": stage not in ("done", "error", "cancelled", "idle"),
+    }
+
+
 def _batch_job_public(job: dict) -> dict:
+    slots = job.get("slots") or {}
+    # sort active first then by attempt
+    slot_list = sorted(
+        slots.values(),
+        key=lambda s: (0 if s.get("active") else 1, s.get("attempt") or 0),
+    )
     return {
         "ok": True,
         "job_id": job["id"],
@@ -1591,10 +1657,13 @@ def _batch_job_public(job: dict) -> dict:
         "failed": job.get("failed", 0),
         "success_target": job.get("success_target"),
         "stopped_early": job.get("stopped_early", False),
+        "cancelled": bool(job.get("cancel")),
         "concurrent": job.get("concurrent"),
         "concurrent_interval": job.get("concurrent_interval"),
         "region": job.get("region"),
         "results": job.get("results") or [],
+        "logs": job.get("logs") or [],
+        "slots": slot_list,
         "error": job.get("error") or "",
         "message": job.get("message") or "",
         "started_at": job.get("started_at"),
@@ -1603,7 +1672,7 @@ def _batch_job_public(job: dict) -> dict:
 
 
 async def _run_batch_job(job_id: str, params: dict) -> None:
-    """Background worker: long-running batch registration."""
+    """Background worker: long-running batch registration with live logs."""
     import time as _time
 
     job = _BATCH_JOBS.get(job_id)
@@ -1626,27 +1695,69 @@ async def _run_batch_job(job_id: str, params: dict) -> None:
     state = {"success": 0, "stop": False}
     lock = asyncio.Lock()
 
+    def _cancelled() -> bool:
+        return bool(job.get("cancel")) or state["stop"]
+
     async def worker(idx: int):
+        attempt = idx + 1
         async with sem:
-            async with lock:
-                if state["stop"] or state["success"] >= target:
-                    state["stop"] = True
+            if _cancelled():
+                _job_append_log(job, attempt=attempt, stage="cancelled", message="任务已停止，跳过")
+                return
+
+            def on_progress(stage: str, message: str, email: Optional[str] = None):
+                if _cancelled() and stage not in ("done", "error", "cancelled"):
                     return
-            r = await _run_one_auto_register(
-                mail_cfg=mail_cfg,
-                region=region,
-                domain=domain,
-                auto_captcha=True,
-                captcha_retries=captcha_retries,
-                otp_timeout=otp_timeout,
-            )
+                _job_append_log(
+                    job,
+                    attempt=attempt,
+                    stage=stage,
+                    message=message,
+                    email=email or "",
+                )
+
+            _job_append_log(job, attempt=attempt, stage="start", message=f"开始第 {attempt} 次注册…")
+            try:
+                r = await _run_one_auto_register(
+                    mail_cfg=mail_cfg,
+                    region=region,
+                    domain=domain,
+                    auto_captcha=True,
+                    captcha_retries=captcha_retries,
+                    otp_timeout=otp_timeout,
+                    on_progress=on_progress,
+                )
+            except Exception as e:
+                r = {"ok": False, "error": str(e)[:200]}
+                _job_append_log(job, attempt=attempt, stage="error", message=str(e)[:200])
+
+            if _cancelled() and not _is_register_success(r):
+                _job_append_log(job, attempt=attempt, stage="cancelled", message="任务停止时未完成")
+                return
+
             slim = _slim_register_result(r)
-            slim["attempt"] = idx + 1
+            slim["attempt"] = attempt
+            email = slim.get("email") or ""
             async with lock:
                 results.append(slim)
                 job["results"] = list(results)
                 if _is_register_success(slim):
                     state["success"] += 1
+                    _job_append_log(
+                        job,
+                        attempt=attempt,
+                        stage="done",
+                        message=f"成功 · userId={slim.get('user_id') or '-'}",
+                        email=email,
+                    )
+                else:
+                    _job_append_log(
+                        job,
+                        attempt=attempt,
+                        stage="error",
+                        message=slim.get("error") or slim.get("message") or "失败",
+                        email=email,
+                    )
                 job["success"] = state["success"]
                 job["failed"] = len(results) - state["success"]
                 job["message"] = (
@@ -1654,18 +1765,32 @@ async def _run_batch_job(job_id: str, params: dict) -> None:
                     + (f"/{success_target}" if success_target > 0 else "")
                     + f"，已尝试 {len(results)}/{max_attempts}"
                 )
-                if state["success"] >= target:
+                if state["success"] >= target or _cancelled():
                     state["stop"] = True
-                    print(f"[BatchReg] job={job_id} success target {state['success']}/{target}")
+                    if state["success"] >= target:
+                        print(f"[BatchReg] job={job_id} success target {state['success']}/{target}")
 
     try:
+        _job_append_log(
+            job,
+            attempt=0,
+            stage="job",
+            message=(
+                f"任务启动：目标 {success_target or '不限'} / 最多 {max_attempts} 次 / "
+                f"并发 {concurrent} / 间隔 {interval}s / 地区 {region}"
+            ),
+        )
         tasks = []
         for i in range(max_attempts):
+            if _cancelled():
+                break
             async with lock:
                 if state["stop"] or state["success"] >= target:
                     break
             if i > 0 and interval > 0:
                 await asyncio.sleep(interval)
+            if _cancelled():
+                break
             async with lock:
                 if state["stop"] or state["success"] >= target:
                     break
@@ -1676,27 +1801,42 @@ async def _run_batch_job(job_id: str, params: dict) -> None:
         ok_n = state["success"]
         attempted = len(results)
         fail_n = attempted - ok_n
-        stopped_early = success_target > 0 and ok_n >= success_target and attempted < max_attempts
-        job["status"] = "done"
+        cancelled = bool(job.get("cancel"))
+        stopped_early = (not cancelled) and success_target > 0 and ok_n >= success_target and attempted < max_attempts
+        job["status"] = "cancelled" if cancelled else "done"
         job["success"] = ok_n
         job["failed"] = fail_n
         job["stopped_early"] = stopped_early
         job["results"] = results
         job["finished_at"] = _time.time()
-        job["message"] = (
-            f"批量注册完成：成功 {ok_n}"
-            + (f"/{success_target}（目标）" if success_target > 0 else f"/{attempted}")
-            + f"，尝试 {attempted}/{max_attempts}"
-            + ("，提前结束" if stopped_early else "")
-            + f"（并发 {concurrent}，间隔 {interval}s）"
-        )
-        job["ok"] = ok_n >= target if success_target > 0 else fail_n == 0
+        # mark remaining slots inactive
+        for s in (job.get("slots") or {}).values():
+            if s.get("active") and s.get("stage") not in ("done", "error", "cancelled"):
+                s["active"] = False
+        if cancelled:
+            job["message"] = (
+                f"任务已停止：成功 {ok_n}"
+                + (f"/{success_target}" if success_target > 0 else "")
+                + f"，已尝试 {attempted}/{max_attempts}"
+            )
+            _job_append_log(job, attempt=0, stage="job", message=job["message"])
+        else:
+            job["message"] = (
+                f"批量注册完成：成功 {ok_n}"
+                + (f"/{success_target}（目标）" if success_target > 0 else f"/{attempted}")
+                + f"，尝试 {attempted}/{max_attempts}"
+                + ("，提前结束" if stopped_early else "")
+                + f"（并发 {concurrent}，间隔 {interval}s）"
+            )
+            _job_append_log(job, attempt=0, stage="job", message=job["message"])
+        job["ok"] = (not cancelled) and (ok_n >= target if success_target > 0 else fail_n == 0)
         print(f"[BatchReg] job={job_id} done: {job['message']}")
     except Exception as e:
         job["status"] = "error"
         job["error"] = str(e)[:300]
         job["message"] = f"批量注册异常: {str(e)[:200]}"
         job["finished_at"] = _time.time()
+        _job_append_log(job, attempt=0, stage="error", message=job["message"])
         print(f"[BatchReg] job={job_id} error: {e}")
 
 
@@ -1759,6 +1899,9 @@ async def auto_register_batch(request: Request, username: str = Depends(verify_a
         "status": "running",
         "ok": True,
         "results": [],
+        "logs": [],
+        "slots": {},
+        "cancel": False,
         "success": 0,
         "failed": 0,
         "max_attempts": max_attempts,
@@ -1773,14 +1916,20 @@ async def auto_register_batch(request: Request, username: str = Depends(verify_a
         "finished_at": None,
     }
     _BATCH_JOBS[job_id] = job
+    _job_append_log(
+        job,
+        attempt=0,
+        stage="job",
+        message=job["message"],
+    )
 
-    # prune old jobs (keep last 30)
-    if len(_BATCH_JOBS) > 30:
+    # prune old finished jobs (keep last 20); never drop running
+    if len(_BATCH_JOBS) > 20:
         finished = sorted(
             [(k, v.get("finished_at") or 0) for k, v in _BATCH_JOBS.items() if v.get("status") != "running"],
             key=lambda x: x[1],
         )
-        for k, _ in finished[: max(0, len(_BATCH_JOBS) - 30)]:
+        for k, _ in finished[: max(0, len(_BATCH_JOBS) - 20)]:
             _BATCH_JOBS.pop(k, None)
 
     params = {
@@ -1800,21 +1949,81 @@ async def auto_register_batch(request: Request, username: str = Depends(verify_a
         **_batch_job_public(job),
         "async": True,
         "poll_url": f"/api/account/auto-register-batch/{job_id}",
-        "message": job["message"] + "（后台执行，请轮询进度，避免网关超时）",
+        "message": job["message"] + "（后台执行，详细日志仅内存保留）",
+    }
+
+
+@router.get("/api/account/auto-register-batch")
+async def list_auto_register_batches(username: str = Depends(verify_admin)):
+    """List in-memory batch jobs (newest first). For UI resume after tab switch."""
+    items = sorted(
+        _BATCH_JOBS.values(),
+        key=lambda j: j.get("started_at") or 0,
+        reverse=True,
+    )
+    return {
+        "ok": True,
+        "jobs": [_batch_job_public(j) for j in items[:10]],
+        "latest_running": next(
+            (j["id"] for j in items if j.get("status") == "running"),
+            None,
+        ),
     }
 
 
 @router.get("/api/account/auto-register-batch/{job_id}")
 async def get_auto_register_batch(job_id: str, username: str = Depends(verify_admin)):
-    """Poll batch registration job status."""
+    """Poll batch registration job status + detailed logs/slots."""
+    job = _BATCH_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "批量任务不存在或已过期（内存任务，重启后清空）")
+    pub = _batch_job_public(job)
+    pub["ok"] = job.get("status") not in ("error",)
+    if job.get("status") in ("done", "cancelled"):
+        pub["ok"] = bool(job.get("ok", True)) if job.get("status") == "done" else True
+    return pub
+
+
+@router.post("/api/account/auto-register-batch/{job_id}/stop")
+async def stop_auto_register_batch(job_id: str, username: str = Depends(verify_admin)):
+    """Request stop; workers exit ASAP. Logs remain until clear/delete."""
     job = _BATCH_JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "批量任务不存在或已过期")
-    pub = _batch_job_public(job)
-    pub["ok"] = job.get("status") != "error"
-    if job.get("status") == "done":
-        pub["ok"] = bool(job.get("ok", True))
-    return pub
+    job["cancel"] = True
+    if job.get("status") == "running":
+        job["message"] = "正在停止…（当前进行中的步骤结束后不再启动新任务）"
+        _job_append_log(job, attempt=0, stage="job", message="用户请求停止任务")
+    return _batch_job_public(job)
+
+
+@router.post("/api/account/auto-register-batch/{job_id}/clear-logs")
+async def clear_auto_register_batch_logs(job_id: str, username: str = Depends(verify_admin)):
+    """Clear in-memory detailed logs for a job (keep results summary)."""
+    job = _BATCH_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "批量任务不存在或已过期")
+    job["logs"] = []
+    # keep only active slots briefly or clear inactive
+    job["slots"] = {
+        k: v for k, v in (job.get("slots") or {}).items() if v.get("active")
+    }
+    return _batch_job_public(job)
+
+
+@router.delete("/api/account/auto-register-batch/{job_id}")
+async def delete_auto_register_batch(job_id: str, username: str = Depends(verify_admin)):
+    """Stop if running and remove job from memory entirely."""
+    job = _BATCH_JOBS.get(job_id)
+    if not job:
+        return {"ok": True, "removed": False}
+    job["cancel"] = True
+    if job.get("status") != "running":
+        _BATCH_JOBS.pop(job_id, None)
+        return {"ok": True, "removed": True}
+    # still running: mark cancel; cleanup after finish via prune, or force drop after mark
+    _BATCH_JOBS.pop(job_id, None)
+    return {"ok": True, "removed": True, "message": "已请求停止并从内存移除"}
 
 
 @router.post("/api/accounts/{idx}/renew")
