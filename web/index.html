@@ -147,6 +147,23 @@
         .account code { background: var(--bg); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: #7dd3fc; word-break: break-all; }
         .account .actions { display: flex; gap: 8px; margin-top: 10px; }
         .account .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .acct-pager {
+            display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+            gap: 10px; margin: 12px 0 4px; font-size: 13px; color: var(--text-muted);
+        }
+        .acct-pager .pager-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .acct-pager select {
+            background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
+            border-radius: 8px; padding: 6px 10px; font-size: 12px; outline: none;
+        }
+        .acct-pager .page-btn {
+            min-width: 34px; padding: 6px 10px; font-size: 12px;
+            background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
+            border-radius: 8px; cursor: pointer;
+        }
+        .acct-pager .page-btn:hover:not(:disabled) { border-color: var(--primary); color: #fff; }
+        .acct-pager .page-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+        .acct-pager .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .empty { text-align: center; color: var(--text-muted); padding: 24px; font-size: 14px; }
 
         /* Toast */
@@ -365,6 +382,7 @@
                 <!-- 账号管理 -->
                 <div id="panel-accounts" class="tab-panel">
                     <div id="accounts"></div>
+                    <div id="accountsPager" class="acct-pager" style="display:none"></div>
                     <div class="btn-group">
                         <button class="btn-outline" onclick="loadAccounts()">刷新</button>
                         <button class="btn-success" onclick="testAll()">测试全部</button>
@@ -419,6 +437,10 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
         let _emailSessionId = null;
         let _regSessionId = null;
         let _regPassword = '';
+        // 账号列表分页
+        let _acctList = [];
+        let _acctPage = 1;
+        let _acctPageSize = parseInt(localStorage.getItem('mimo_acct_page_size') || '10', 10) || 10;
 
         // === 工具函数 ===
         function $id(id) { return document.getElementById(id); }
@@ -1118,22 +1140,48 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
             }
         }
 
-        // === 账号管理 ===
-        async function loadAccounts() {
-            try {
-                const r = await fetch('/api/accounts');
-                const d = await r.json();
-                const el = $id('accounts');
-                if (!d.accounts || !d.accounts.length) {
-                    el.innerHTML = '<div class="empty">暂无配置账号</div>';
-                    return;
-                }
-                el.innerHTML = d.accounts.map((a, i) => `
+        // === 账号管理（分页） ===
+        function _acctTotalPages() {
+            return Math.max(1, Math.ceil((_acctList.length || 0) / _acctPageSize));
+        }
+
+        function setAcctPageSize(size) {
+            _acctPageSize = parseInt(size, 10) || 10;
+            localStorage.setItem('mimo_acct_page_size', String(_acctPageSize));
+            _acctPage = 1;
+            renderAccountsPage();
+        }
+
+        function goAcctPage(page) {
+            const total = _acctTotalPages();
+            _acctPage = Math.min(total, Math.max(1, parseInt(page, 10) || 1));
+            renderAccountsPage();
+        }
+
+        function renderAccountsPage() {
+            const el = $id('accounts');
+            const pager = $id('accountsPager');
+            if (!_acctList.length) {
+                el.innerHTML = '<div class="empty">暂无配置账号</div>';
+                if (pager) pager.style.display = 'none';
+                return;
+            }
+            const total = _acctList.length;
+            const totalPages = _acctTotalPages();
+            if (_acctPage > totalPages) _acctPage = totalPages;
+            const start = (_acctPage - 1) * _acctPageSize;
+            const end = Math.min(total, start + _acctPageSize);
+            const slice = _acctList.slice(start, end);
+
+            el.innerHTML = slice.map((a) => {
+                const i = a._idx;
+                return `
                     <div class="account">
                         <div class="info-line">
                             <span class="status-dot" style="background:${a.is_valid ? '#22c55e' : '#64748b'}"></span>
-                            <b>userId:</b> <code>${a.user_id}</code>
-                            ${a.is_valid ? '<span style="color:#22c55e;margin-left:8px;font-size:12px">'+'✅ 有效'+'</span>' : '<span style="color:#94a3b8;margin-left:8px;font-size:12px">'+'⚪ 未验证'+'</span>'}
+                            <b>#${i + 1}</b>
+                            <b style="margin-left:8px">userId:</b> <code>${a.user_id}</code>
+                            ${a.is_valid ? '<span style="color:#22c55e;margin-left:8px;font-size:12px">✅ 有效</span>' : '<span style="color:#94a3b8;margin-left:8px;font-size:12px">⚪ 未验证</span>'}
                             ${a.last_test ? '<span style="color:var(--text-muted);margin-left:4px;font-size:11px">· ' + a.last_test + '</span>' : ''}
                         </div>
                         ${a.email ? '<div class="info-line"><b>email:</b> <code>'+a.email+'</code>'+(a.auto_renew?' <span style="color:#38bdf8;font-size:11px">· 自动续期</span>':'')+(a.has_pass_token?' <span style="color:#a78bfa;font-size:11px">· passToken</span>':'')+(a.has_mail_jwt?' <span style="color:#34d399;font-size:11px" title="过期后可用临时邮箱自动取码重登">· temp-mail自动重登</span>':'')+(a.region?' <span style="color:var(--text-muted);font-size:11px">· '+a.region+'</span>':'')+'</div>' : ''}
@@ -1144,10 +1192,60 @@ let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
                             <button class="btn-outline" onclick="renewAcct(${i})" style="border-color:#0ea5e9;color:#7dd3fc">续期</button>
                             <button class="btn-danger" onclick="delAcct(${i})">删除</button>
                         </div>
-                    </div>
-                `).join('');
+                    </div>`;
+            }).join('');
+
+            if (pager) {
+                pager.style.display = 'flex';
+                // page number buttons (window around current)
+                let nums = '';
+                const windowSize = 5;
+                let from = Math.max(1, _acctPage - Math.floor(windowSize / 2));
+                let to = Math.min(totalPages, from + windowSize - 1);
+                from = Math.max(1, to - windowSize + 1);
+                for (let p = from; p <= to; p++) {
+                    nums += '<button type="button" class="page-btn' + (p === _acctPage ? ' active' : '') +
+                        '" onclick="goAcctPage(' + p + ')">' + p + '</button>';
+                }
+                pager.innerHTML =
+                    '<div>共 <b style="color:var(--text)">' + total + '</b> 个账号 · 第 ' +
+                    _acctPage + '/' + totalPages + ' 页 · 显示 ' + (start + 1) + '-' + end + '</div>' +
+                    '<div class="pager-btns">' +
+                    '<span>每页</span>' +
+                    '<select onchange="setAcctPageSize(this.value)">' +
+                    [10, 20, 50, 100].map(function (n) {
+                        return '<option value="' + n + '"' + (_acctPageSize === n ? ' selected' : '') + '>' + n + '</option>';
+                    }).join('') +
+                    '</select>' +
+                    '<button type="button" class="page-btn" onclick="goAcctPage(1)" ' + (_acctPage <= 1 ? 'disabled' : '') + '>首页</button>' +
+                    '<button type="button" class="page-btn" onclick="goAcctPage(' + (_acctPage - 1) + ')" ' + (_acctPage <= 1 ? 'disabled' : '') + '>上一页</button>' +
+                    nums +
+                    '<button type="button" class="page-btn" onclick="goAcctPage(' + (_acctPage + 1) + ')" ' + (_acctPage >= totalPages ? 'disabled' : '') + '>下一页</button>' +
+                    '<button type="button" class="page-btn" onclick="goAcctPage(' + totalPages + ')" ' + (_acctPage >= totalPages ? 'disabled' : '') + '>末页</button>' +
+                    '</div>';
+            }
+        }
+
+        async function loadAccounts() {
+            try {
+                const r = await fetch('/api/accounts');
+                const d = await r.json();
+                if (!d.accounts || !d.accounts.length) {
+                    _acctList = [];
+                    renderAccountsPage();
+                    return;
+                }
+                // 保留真实下标，供测试/续期/删除接口使用
+                _acctList = d.accounts.map(function (a, i) {
+                    a._idx = i;
+                    return a;
+                });
+                if (_acctPage > _acctTotalPages()) _acctPage = _acctTotalPages();
+                renderAccountsPage();
             } catch (e) {
+                _acctList = [];
                 $id('accounts').innerHTML = '<div class="empty">加载失败</div>';
+                if ($id('accountsPager')) $id('accountsPager').style.display = 'none';
             }
         }
 
