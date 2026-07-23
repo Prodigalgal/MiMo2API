@@ -6,8 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 # better-sqlite3 publishes a newer-GLIBC arm64 prebuild than Bookworm can load.
-# Rebuild it here so the native binding matches the runtime base image.
-RUN npm ci && npm rebuild better-sqlite3 --build-from-source
+# Its normal install intentionally skips node-gyp when a prebuild is present,
+# so force a source build and remove the prebuilds to select build/Release.
+RUN npm ci \
+    && cd node_modules/better-sqlite3 \
+    && node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --release --force_build=1 \
+    && rm -rf prebuilds
 COPY tsconfig.json vitest.config.ts ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
