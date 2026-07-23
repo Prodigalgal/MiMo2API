@@ -50,13 +50,17 @@ export class ConfigStore {
   }
 
   nextAccount(): MimoAccount | undefined {
-    const accounts = this.#config.mimo_accounts.filter((account) => (
-      account.is_valid && account.service_token && account.user_id && account.xiaomichatbot_ph
-    ));
+    const accounts = this.usableAccounts();
     if (accounts.length === 0) return undefined;
     const account = accounts[this.#accountIndex % accounts.length];
     this.#accountIndex = (this.#accountIndex + 1) % accounts.length;
     return structuredClone(account);
+  }
+
+  usableAccounts(): MimoAccount[] {
+    return this.#config.mimo_accounts.filter((account) => (
+      account.is_valid && account.service_token && account.user_id && account.xiaomichatbot_ph
+    )).map((account) => structuredClone(account));
   }
 
   accountByUserId(userId: string): MimoAccount | undefined {

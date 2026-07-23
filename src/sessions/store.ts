@@ -40,6 +40,13 @@ export class ConversationStore {
   constructor(private readonly database: AppDatabase) {}
 
   resolve(input: ConversationSessionInput, config: ConfigStore): ConversationSession | undefined {
+    const existing = this.find(input, config);
+    if (existing) return existing;
+    const account = config.nextAccount();
+    return account ? this.create(input, account) : undefined;
+  }
+
+  find(input: ConversationSessionInput, config: ConfigStore): ConversationSession | undefined {
     this.cleanup();
     const key = sessionKey(input);
     const row = this.database.connection.prepare(`
@@ -47,12 +54,12 @@ export class ConversationStore {
              context_hash, context_query, messages_json, summary_text, expires_at
       FROM conversation_sessions WHERE session_key = ? AND expires_at > ?
     `).get(key, Date.now()) as SessionRow | undefined;
-    const existing = row ? config.accountByUserId(row.account_user_id) : undefined;
-    if (existing) {
+    const account = row ? config.accountByUserId(row.account_user_id) : undefined;
+    if (account) {
       this.touch(key);
       return {
         key,
-        account: existing,
+        account,
         conversationId: row!.conversation_id,
         promptTokens: row!.prompt_tokens,
         shouldCompact: row!.prompt_tokens >= compactThreshold() && Boolean(row!.context_query),
@@ -60,8 +67,11 @@ export class ConversationStore {
         summary: row!.summary_text,
       };
     }
-    const account = config.nextAccount();
-    if (!account) return undefined;
+    return undefined;
+  }
+
+  create(input: ConversationSessionInput, account: MimoAccount): ConversationSession {
+    const key = sessionKey(input);
     const conversationId = newConversationId();
     this.database.connection.prepare(`
       INSERT INTO conversation_sessions(

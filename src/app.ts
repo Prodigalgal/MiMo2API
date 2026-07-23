@@ -18,6 +18,7 @@ import { chatRoutes } from "./routes/chat.js";
 import { modelRoutes } from "./routes/models.js";
 import { responseRoutes } from "./routes/responses.js";
 import { UsageRepository } from "./usage/repository.js";
+import { AccountRequestCoordinator } from "./accounts/request-coordinator.js";
 
 export interface BuildOptions {
   configFile?: string;
@@ -29,11 +30,12 @@ export interface BuildOptions {
 export async function buildApp(options: BuildOptions = {}): Promise<FastifyInstance> {
   const config = await ConfigStore.open(options.configFile, options.databaseFile);
   const usage = new UsageRepository(config.database);
-  const completion = new CompletionService(config, usage);
+  const accountRequests = new AccountRequestCoordinator();
+  const completion = new CompletionService(config, usage, accountRequests);
   const responseRepository = new ResponseRepository(config.database);
   const responses = new ResponsesService(config, completion, responseRepository);
   const models = new ModelService(config);
-  const renewals = new RenewalScheduler(config);
+  const renewals = new RenewalScheduler(config, accountRequests);
   const proxy = new ProxyPool(config.snapshot().proxy_pool);
   const registrations = new RegistrationService(config, proxy);
   const app = Fastify({
@@ -73,6 +75,7 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
     version: "3.0.0",
     database: "sqlite",
     accounts: config.snapshot().mimo_accounts.length,
+    inference: completion.capacityStatus(),
     renewals: renewals.status(),
   }));
   app.get("/favicon.ico", async (_request, reply) => reply.status(204).send());
@@ -90,6 +93,7 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
     await responses.stop();
     await registrations.stop();
     await proxy.close();
+    completion.close();
     config.database.close();
   });
 

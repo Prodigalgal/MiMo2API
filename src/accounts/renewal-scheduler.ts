@@ -2,6 +2,7 @@ import type { ConfigStore } from "../config/store.js";
 import { asApiError } from "../core/errors.js";
 import { XiaomiTokenRenewer } from "./xiaomi-renewer.js";
 import { AccountValidator } from "./account-validator.js";
+import { AccountRequestCoordinator, type AccountLease } from "./request-coordinator.js";
 
 export class RenewalScheduler {
   #stopped = true;
@@ -15,6 +16,7 @@ export class RenewalScheduler {
 
   constructor(
     private readonly config: ConfigStore,
+    private readonly requests: AccountRequestCoordinator,
     private readonly renewer = new XiaomiTokenRenewer(),
     private readonly validator = new AccountValidator(),
   ) {}
@@ -46,13 +48,17 @@ export class RenewalScheduler {
     const accounts = this.config.snapshot().mimo_accounts;
     const account = accounts[index];
     if (!account) return { ok: false, error: "account not found" };
+    const signal = AbortSignal.timeout(this.leaseMs);
+    const lease = await this.requests.acquire(account, signal);
     try {
-      const renewed = await this.renewer.renew(account, AbortSignal.timeout(this.leaseMs));
-      accounts[index] = await this.validator.validate(renewed, AbortSignal.timeout(this.leaseMs));
+      const renewed = await this.renewer.renew(account, signal);
+      accounts[index] = await this.validator.validate(renewed, signal);
       await this.config.replaceAccounts(accounts);
       return { ok: true, user_id: accounts[index]?.user_id, last_renew: accounts[index]?.last_renew };
     } catch (error) {
       return { ok: false, error: asApiError(error).message };
+    } finally {
+      lease.release();
     }
   }
 
@@ -60,14 +66,18 @@ export class RenewalScheduler {
     const accounts = this.config.snapshot().mimo_accounts;
     const account = accounts[index];
     if (!account) return { ok: false, error: "account not found" };
+    const signal = AbortSignal.timeout(this.leaseMs);
+    const lease = await this.requests.acquire(account, signal);
     try {
-      accounts[index] = await this.validator.validate(account, AbortSignal.timeout(this.leaseMs));
+      accounts[index] = await this.validator.validate(account, signal);
       await this.config.replaceAccounts(accounts);
       return { ok: true, user_id: accounts[index]?.user_id, last_test: accounts[index]?.last_test };
     } catch (error) {
       accounts[index] = { ...account, is_valid: false, last_test: new Date().toISOString(), renew_error: asApiError(error).message };
       await this.config.replaceAccounts(accounts);
       return { ok: false, error: asApiError(error).message };
+    } finally {
+      lease.release();
     }
   }
 
@@ -79,21 +89,22 @@ export class RenewalScheduler {
         await delay(this.pollMs, this.#controller.signal).catch(() => undefined);
         continue;
       }
+      const signal = AbortSignal.any([
+        this.#controller.signal,
+        AbortSignal.timeout(this.leaseMs),
+      ]);
+      let lease: AccountLease | undefined;
       try {
-        const renewed = await this.renewer.renew(claimed.account, AbortSignal.any([
-          this.#controller.signal,
-          AbortSignal.timeout(this.leaseMs),
-        ]));
-        const validated = await this.validator.validate(renewed, AbortSignal.any([
-          this.#controller.signal,
-          AbortSignal.timeout(this.leaseMs),
-        ]));
+        lease = await this.requests.acquire(claimed.account, signal);
+        const renewed = await this.renewer.renew(claimed.account, signal);
+        const validated = await this.validator.validate(renewed, signal);
         this.config.database.completeRenewal(claimed.key, validated, Date.now() + jitter(this.intervalMs, 0.2));
       } catch (error) {
         if (this.#controller.signal.aborted) break;
         const backoff = Math.min(this.intervalMs, 900_000 * 2 ** Math.min(claimed.attempts, 4));
         this.config.database.failRenewal(claimed.key, asApiError(error).message, Date.now() + jitter(backoff, 0.25));
       } finally {
+        lease?.release();
         this.config.refreshFromDatabase();
       }
       await delay(this.gapMs, this.#controller.signal).catch(() => undefined);

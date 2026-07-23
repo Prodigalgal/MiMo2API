@@ -10,6 +10,7 @@ MiMo2API 将小米 MiMo AI Studio 转换为 OpenAI-compatible API。当前版本
 - 工具调用：注入完整 JSON Schema，并在返回前使用 JSON Schema 校验参数
 - SQLite：账号、配置、Responses 状态、usage 和保活队列统一持久化
 - 账号保活：SQLite 租约、初始分散、低并发 worker、成功周期抖动、失败指数退避
+- 账号并发：单账号请求硬上限、最空闲账号调度、可取消等待队列；保活和测号与推理共用账号租约
 - 注册代理：每个注册会话独占一个 VLESS 节点、随机本地端口、配置目录和 `sing-box` 子进程；成功、失败、取消或超时后立即回收
 - 会话：`X-MiMo-Session-Id` / `session_id` / `user` 驱动的 SQLite 粘性路由，同一会话固定账号和 MiMo `conversationId`
 - 上下文：会话查询缓存带 TTL；累计 prompt tokens 达阈值后自动压缩上下文并轮换上游会话
@@ -61,6 +62,15 @@ curl http://localhost:8080/v1/chat/completions \
 流式响应会立即发送 SSE comment，并每 10 秒发送 heartbeat。客户端断开后上游请求会取消；写入遵守 Node stream 背压。若设置 `stream_options.include_usage=true`，`[DONE]` 前会返回 `choices: []` 的 usage chunk。
 
 连续 Chat 请求可传 `X-MiMo-Session-Id: <stable-id>`，或在请求体传 `session_id`。Responses 首次请求会自动创建会话；后续使用 `previous_response_id` 时会继承同一账号和上游会话。会话记录按 API Key 隔离，默认 3 天过期。累计输入达到 `MIMO2API_SESSION_COMPACT_THRESHOLD_TOKENS`（默认 `150000`）时，服务先生成压缩上下文，再切换到新的上游会话。
+
+同一会话的请求会严格串行执行，避免多个请求并发写入同一个 MiMo `conversationId`。默认每个 MiMo 账号同时只承载一个推理、测号或保活操作；无会话请求选择当前最空闲账号，有会话请求在粘性账号前排队，不会为规避拥塞而换号。相关环境变量：
+
+- `MIMO2API_ACCOUNT_MAX_CONCURRENCY=1`
+- `MIMO2API_ACCOUNT_QUEUE_LIMIT=200`
+- `MIMO2API_ACCOUNT_QUEUE_TIMEOUT_MS=600000`
+- `MIMO2API_SESSION_QUEUE_LIMIT=200`
+
+`GET /healthz` 的 `inference` 字段会返回当前活动请求数、等待请求数、忙碌账号数和会话队列状态。当前 SQLite 部署应保持单副本；若扩展为多副本，需要先把账号租约迁移为跨 Pod 协调机制。
 
 ## Responses
 
