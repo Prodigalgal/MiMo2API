@@ -9,6 +9,7 @@ export async function* decodeSse(
   const decoder = new TextDecoder();
   let buffer = "";
   let dataLines: string[] = [];
+  let lastDataAt = Date.now();
 
   const dispatchLine = (line: string): string | undefined => {
     if (line === "") {
@@ -22,7 +23,11 @@ export async function* decodeSse(
 
   try {
     while (true) {
-      const result = await readWithTimeout(reader, signal, idleTimeoutMs);
+      const remainingIdleMs = idleTimeoutMs - (Date.now() - lastDataAt);
+      if (remainingIdleMs <= 0) {
+        throw new ApiError(504, "upstream_idle_timeout", "MiMo stream became idle");
+      }
+      const result = await readWithTimeout(reader, signal, remainingIdleMs);
       if (result.done) break;
       buffer += decoder.decode(result.value, { stream: true });
       let newline = buffer.indexOf("\n");
@@ -30,17 +35,26 @@ export async function* decodeSse(
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
         const data = dispatchLine(line);
-        if (data !== undefined) yield data;
+        if (data !== undefined) {
+          if (data.trim()) lastDataAt = Date.now();
+          yield data;
+        }
         newline = buffer.indexOf("\n");
       }
     }
     buffer += decoder.decode();
     if (buffer) {
       const data = dispatchLine(buffer.replace(/\r$/, ""));
-      if (data !== undefined) yield data;
+      if (data !== undefined) {
+        if (data.trim()) lastDataAt = Date.now();
+        yield data;
+      }
     }
     const remaining = dispatchLine("");
-    if (remaining !== undefined) yield remaining;
+    if (remaining !== undefined) {
+      if (remaining.trim()) lastDataAt = Date.now();
+      yield remaining;
+    }
   } catch (error) {
     await reader.cancel(error).catch(() => undefined);
     throw error;

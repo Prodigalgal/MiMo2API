@@ -95,7 +95,10 @@ export class MimoClient {
       combined,
       this.idleTimeoutMs,
     )) {
-      if (!raw || raw === "[DONE]") continue;
+      if (!raw) continue;
+      // MiMo can keep the HTTP connection open after sending the SSE terminal marker.
+      // The marker is the completion boundary; waiting for socket close leaves tool calls hanging.
+      if (raw === "[DONE]") return;
       let event: unknown;
       try {
         event = JSON.parse(raw);
